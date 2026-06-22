@@ -25,6 +25,11 @@ dev = [
 
 [project.scripts]
 music-rec = "music_taste_rec.cli:app"
+openband-prompt = "openband.prompt_generation.cli:main"
+openband-suno-browser = "openband.suno_browser.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/music_taste_rec", "src/openband"]
 
 [build-system]
 requires = ["hatchling"]

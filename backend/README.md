@@ -19,6 +19,30 @@ cd backend
 uv sync
 ```
 
+## Backend Modules
+
+```text
+src/music_taste_rec/             FastAPI routes and tag/style model
+src/openband/prompt_generation/  Profile, playlist, prompt, and lyric generation
+src/openband/suno_browser/       Suno browser automation backend module
+```
+
+`openband.prompt_generation` is Python-native. It uses the trained tag model to
+build playlist/song tag seeds and calls a Responses-compatible API to draft Suno
+prompts.
+
+`openband.suno_browser` is the backend wrapper around the current Playwright
+browser automation scripts. The scripts live inside the backend module now, so
+FastAPI or future workers can call them through Python without treating them as
+an external project.
+
+```bash
+cd backend/src/openband/suno_browser/playwright
+npm install
+cd ../../../..
+uv run openband-suno-browser --help
+```
+
 ## Data
 
 Download the Kaggle dataset:

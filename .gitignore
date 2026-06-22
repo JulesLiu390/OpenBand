@@ -15,21 +15,26 @@ backend/.venv/
 backend/.pytest_cache/
 backend/data/
 backend/models/
+backend/runtime/
+backend/src/openband/suno_browser/playwright/node_modules/
+backend/src/openband/suno_browser/playwright/suno-storage-state.json
+backend/src/openband/suno_browser/playwright/suno-chrome-profile/
+backend/src/openband/suno_browser/playwright/suno-profile/
+backend/src/openband/suno_browser/playwright/downloads/
+backend/src/openband/suno_browser/playwright/custom-downloads/
+backend/src/openband/suno_browser/playwright/headless-screenshots/
+backend/src/openband/suno_browser/playwright/*.png
 
 # Mobile generated state
 mobile/node_modules/
 mobile/.expo/
 mobile/mobile/screenshots/
 
-# Suno prompt tool local state
-suno/.env
-suno/.venv/
-suno/profiles/*
-!suno/profiles/.gitkeep
-suno/results/*
-!suno/results/.gitkeep
+# Legacy local Suno prompt tool state
+suno/
 
 # Suno browser automation local state and generated media
+反代/
 反代/node_modules/
 反代/suno-storage-state.json
 反代/suno-chrome-profile/

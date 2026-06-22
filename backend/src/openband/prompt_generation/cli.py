@@ -14,19 +14,21 @@ from datetime import datetime
 from pathlib import Path
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+BACKEND_ROOT = Path(__file__).resolve().parents[3]
+PACKAGE_ROOT = Path(__file__).resolve().parent
+PROMPT_ROOT = PACKAGE_ROOT / "prompts"
 PROMPT_FILES = {
-    "brief_candidates": "brief candidates prompt",
-    "profile": "profile prompt",
-    "playlist": "playlist prompt",
-    "style": "style prompt",
-    "lyrics": "lyrics prompt",
-    "original": "original prompt",
+    "brief_candidates": "brief_candidates.prompt.md",
+    "profile": "profile.prompt.md",
+    "playlist": "playlist.prompt.md",
+    "style": "style.prompt.md",
+    "lyrics": "lyrics.prompt.md",
+    "original": "original.prompt.md",
 }
 KINDS = ("both", "style", "lyrics", "original")
-DEFAULT_PROFILE_FILE = "profiles/user_profile.json"
-DEFAULT_PLAYLIST_HISTORY_FILE = "profiles/playlist_history.json"
-DEFAULT_TAG_MODEL_PATH = "../backend/models/style_model.joblib"
+DEFAULT_PROFILE_FILE = "runtime/suno/profiles/user_profile.json"
+DEFAULT_PLAYLIST_HISTORY_FILE = "runtime/suno/profiles/playlist_history.json"
+DEFAULT_TAG_MODEL_PATH = "models/style_model.joblib"
 DEFAULT_PLAYLIST_TOTAL = 10
 DEFAULT_PLAYLIST_PROFILE_ONLY = 7
 DEFAULT_PLAYLIST_TAGS_PER_SONG = 6
@@ -112,7 +114,7 @@ def dedupe(items: list[str]) -> list[str]:
 def profile_path(args: argparse.Namespace) -> Path:
     path = Path(args.profile_file)
     if not path.is_absolute():
-        path = PROJECT_ROOT / path
+        path = BACKEND_ROOT / path
     return path
 
 
@@ -121,7 +123,7 @@ def playlist_history_path(args: argparse.Namespace) -> Path:
         getattr(args, "playlist_history_file", DEFAULT_PLAYLIST_HISTORY_FILE)
     )
     if not path.is_absolute():
-        path = PROJECT_ROOT / path
+        path = BACKEND_ROOT / path
     return path
 
 
@@ -178,7 +180,7 @@ def negative_tag(tag: str) -> str:
 def tag_model_path(args: argparse.Namespace) -> Path:
     path = Path(args.tag_model_path)
     if not path.is_absolute():
-        path = PROJECT_ROOT / path
+        path = BACKEND_ROOT / path
     return path.resolve()
 
 
@@ -187,7 +189,7 @@ def load_tag_model(args: argparse.Namespace):
     if not path.exists():
         raise SystemExit(f"Tag model not found: {path}")
 
-    parent_src = PROJECT_ROOT.parent / "backend" / "src"
+    parent_src = BACKEND_ROOT / "src"
     if parent_src.exists():
         sys.path.insert(0, str(parent_src))
 
@@ -317,7 +319,7 @@ def correct_style_tags(
 
 
 def profile_prompt_with_allowed_tags(args: argparse.Namespace) -> tuple[str, list[str]]:
-    profile_prompt = read_text(PROJECT_ROOT / PROMPT_FILES["profile"])
+    profile_prompt = read_text(PROMPT_ROOT / PROMPT_FILES["profile"])
     if args.no_tag_filter:
         return profile_prompt, []
 
@@ -1134,7 +1136,7 @@ def run_daily_playlist(args: argparse.Namespace, api_key: str) -> Path | None:
         raise SystemExit("No profile found. Run --init-profile first.")
 
     seed = build_daily_playlist_seed(args, profile)
-    playlist_prompt = read_text(PROJECT_ROOT / PROMPT_FILES["playlist"])
+    playlist_prompt = read_text(PROMPT_ROOT / PROMPT_FILES["playlist"])
     playlist_text, _data = run_prompt(
         args,
         api_key,
@@ -1261,7 +1263,7 @@ def run_brief_candidates(
     api_key: str,
     tags: list[str],
 ) -> tuple[list[dict[str, str]], int, dict[str, str]]:
-    prompt = read_text(PROJECT_ROOT / PROMPT_FILES["brief_candidates"])
+    prompt = read_text(PROMPT_ROOT / PROMPT_FILES["brief_candidates"])
     text, _data = run_prompt(args, api_key, prompt, brief_candidates_input(args, tags))
     candidates = normalize_brief_candidates(extract_json_array(text))
     selected_index, selected = choose_brief_candidate(args, tags, candidates)
@@ -1330,8 +1332,8 @@ def run_generation_flow(
         if args.prompt_file:
             raise SystemExit("--prompt-file cannot be used with --kind both.")
 
-        style_prompt = read_text(PROJECT_ROOT / PROMPT_FILES["style"])
-        lyrics_prompt = read_text(PROJECT_ROOT / PROMPT_FILES["lyrics"])
+        style_prompt = read_text(PROMPT_ROOT / PROMPT_FILES["style"])
+        lyrics_prompt = read_text(PROMPT_ROOT / PROMPT_FILES["lyrics"])
 
         style_text, style_data = run_prompt(args, api_key, style_prompt, user_text)
         lyrics_input = (
@@ -1373,7 +1375,7 @@ def run_generation_flow(
     prompt_path = (
         Path(args.prompt_file)
         if args.prompt_file
-        else PROJECT_ROOT / PROMPT_FILES[args.kind]
+        else PROMPT_ROOT / PROMPT_FILES[args.kind]
     )
     prompt_text = read_text(prompt_path)
     text, data = run_prompt(args, api_key, prompt_text, user_text)
@@ -1575,7 +1577,7 @@ def write_result(args: argparse.Namespace, content: str, user_text: str) -> Path
 
     output_dir = Path(args.output_dir)
     if not output_dir.is_absolute():
-        output_dir = PROJECT_ROOT / output_dir
+        output_dir = BACKEND_ROOT / output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if args.output_file:
@@ -1816,7 +1818,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
-    load_dotenv(PROJECT_ROOT / ".env")
+    load_dotenv(BACKEND_ROOT / ".env")
 
     args = parse_args()
     api_key = os.environ.get(args.api_key_env)
