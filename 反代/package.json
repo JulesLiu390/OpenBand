@@ -1,0 +1,17 @@
+{
+  "name": "suno-playwright-helper",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "suno:open": "node scripts/open-suno-chrome.mjs",
+    "suno:inspect": "node scripts/inspect-suno.mjs",
+    "suno:create": "node scripts/create-suno.mjs",
+    "suno:download": "node scripts/download-suno.mjs",
+    "suno:generate-download": "node scripts/generate-download-suno.mjs",
+    "suno:batch": "node scripts/batch-suno.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.61.0"
+  }
+}

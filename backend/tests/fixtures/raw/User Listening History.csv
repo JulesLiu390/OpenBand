@@ -1,0 +1,12 @@
+user_id,track_id,play_count
+u1,t1,5
+u1,t2,3
+u1,t7,2
+u2,t4,5
+u2,t8,4
+u3,t5,6
+u3,t7,1
+u4,t3,5
+u4,t2,1
+u5,t6,4
+u5,t2,2

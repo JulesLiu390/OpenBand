@@ -1,0 +1,40 @@
+.DS_Store
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+data/raw/
+data/processed/
+models/
+*.joblib
+*.zip
+
+# Backend local data/model artifacts
+backend/.venv/
+backend/.pytest_cache/
+backend/data/
+backend/models/
+
+# Mobile generated state
+mobile/node_modules/
+mobile/.expo/
+mobile/mobile/screenshots/
+
+# Suno prompt tool local state
+suno/.env
+suno/.venv/
+suno/profiles/*
+!suno/profiles/.gitkeep
+suno/results/*
+!suno/results/.gitkeep
+
+# Suno browser automation local state and generated media
+反代/node_modules/
+反代/suno-storage-state.json
+反代/suno-chrome-profile/
+反代/suno-profile/
+反代/downloads/
+反代/custom-downloads/
+反代/headless-screenshots/
+反代/*.png

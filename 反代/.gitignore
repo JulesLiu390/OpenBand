@@ -1,0 +1,13 @@
+.DS_Store
+node_modules/
+
+# Browser auth/session state. Do not commit these.
+suno-storage-state.json
+suno-chrome-profile/
+suno-profile/
+
+# Generated media and automation screenshots.
+downloads/
+custom-downloads/
+headless-screenshots/
+*.png
