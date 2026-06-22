@@ -1,6 +1,7 @@
-import { Tabs } from "expo-router";
-import { ColorValue, Text } from "react-native";
+import { Redirect, Tabs } from "expo-router";
+import { ActivityIndicator, ColorValue, StyleSheet, Text, View } from "react-native";
 
+import { useAuth } from "@/components/AuthProvider";
 import { theme } from "@/lib/theme";
 
 function TabIcon({ color, label }: { color: ColorValue; label: string }) {
@@ -8,6 +9,20 @@ function TabIcon({ color, label }: { color: ColorValue; label: string }) {
 }
 
 export default function TabLayout() {
+  const { isAuthenticated, loading } = useAuth();
+
+  if (loading) {
+    return (
+      <View style={styles.loading}>
+        <ActivityIndicator color={theme.colors.tint} />
+      </View>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return <Redirect href="/login" />;
+  }
+
   return (
     <Tabs
       screenOptions={{
@@ -50,3 +65,12 @@ export default function TabLayout() {
     </Tabs>
   );
 }
+
+const styles = StyleSheet.create({
+  loading: {
+    alignItems: "center",
+    backgroundColor: theme.colors.background,
+    flex: 1,
+    justifyContent: "center",
+  },
+});

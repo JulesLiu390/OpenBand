@@ -1,6 +1,6 @@
 # OpenBand
 
-OpenBand is an AI music platform prototype. The repo is split into a mobile client and a FastAPI backend. Music generation, prompt generation, and Suno browser automation are backend modules.
+OpenBand is a private, friends-only, non-profit AI music platform prototype. The repo is split into a mobile client and a FastAPI backend. Music generation, prompt generation, Suno browser automation, authentication, and tag-based recommendation live behind the backend.
 
 ## Structure
 
@@ -15,11 +15,11 @@ OpenBand/
 ```bash
 cd mobile
 npm install
+EXPO_PUBLIC_API_URL=http://127.0.0.1:8000 npm run web
+# or
 npm run ios
 # or
 npm run android
-# or
-npm run web
 ```
 
 Current tabs:
@@ -30,13 +30,17 @@ Current tabs:
 
 The bottom player opens the full music player screen.
 
+The mobile app uses a first-login invite key. The backend returns a short-lived
+access token plus a refresh token; iOS/Android store the session with
+`expo-secure-store`, while web previews use `localStorage`.
+
 ## Backend
 
 ```bash
 cd backend
 uv sync
 uv run pytest
-uv run music-rec serve --model-path models/style_model.joblib --port 8000
+OPENBAND_ADMIN_KEY=change-me uv run music-rec serve --model-path models/style_model.joblib --port 8000
 ```
 
 The backend uses FastAPI and includes three internal modules:
@@ -48,12 +52,34 @@ The backend uses FastAPI and includes three internal modules:
 The current FastAPI app exposes:
 
 - `GET /health`
+- `POST /v1/auth/invite-keys`
+- `POST /v1/auth/login`
+- `POST /v1/auth/refresh`
+- `GET /v1/me`
+- `GET/PUT /v1/me/music-tags`
 - `GET /v1/tags/{tag}/similar`
 - `POST /v1/profile`
 - `POST /v1/score`
 - `POST /v1/rank`
 
 Tests use local fixtures and FastAPI `TestClient`, so they can run without Kaggle data or the production model file.
+
+Create a one-time invite key:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/auth/invite-keys \
+  -H "Content-Type: application/json" \
+  -H "X-Admin-Key: change-me" \
+  -d '{"label":"Alice"}'
+```
+
+The response includes a raw key, a QR/deep-link payload like
+`openband://login?key=...`, and `qr_svg` for distribution. After first login,
+clients call protected APIs with:
+
+```text
+Authorization: Bearer <access_token>
+```
 
 Generation helpers:
 

@@ -9,6 +9,14 @@ import numpy as np
 import pandas as pd
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from openband.auth import (
+    DEFAULT_AUTH_DB_PATH,
+    AuthStore,
+    AuthUser,
+    create_auth_router,
+    create_me_router,
+    current_user_dependency,
+)
 from pydantic import BaseModel, Field
 
 from music_taste_rec.style_model import StyleAssociationModel, parse_style_tags
@@ -16,6 +24,8 @@ from music_taste_rec.style_model import StyleAssociationModel, parse_style_tags
 
 DEFAULT_MODEL_PATH = Path("models/style_model.joblib")
 MODEL_PATH_ENV = "MUSIC_REC_MODEL_PATH"
+AUTH_DB_PATH_ENV = "OPENBAND_AUTH_DB_PATH"
+ADMIN_KEY_ENV = "OPENBAND_ADMIN_KEY"
 
 
 class SongInput(BaseModel):
@@ -44,7 +54,12 @@ class RankRequest(BaseModel):
     top_n: int = Field(default=20, ge=1, le=500)
 
 
-def create_app(model_path: Path | None = None) -> FastAPI:
+def create_app(
+    model_path: Path | None = None,
+    auth_db_path: Path | None = None,
+    admin_key: str | None = None,
+    require_auth: bool = True,
+) -> FastAPI:
     app = FastAPI(
         title="Music Taste Recommendation API",
         version="0.1.0",
@@ -58,6 +73,18 @@ def create_app(model_path: Path | None = None) -> FastAPI:
         allow_headers=["*"],
     )
     app.state.model_path = Path(model_path or os.getenv(MODEL_PATH_ENV, DEFAULT_MODEL_PATH))
+    app.state.auth_store = AuthStore(
+        Path(auth_db_path or os.getenv(AUTH_DB_PATH_ENV, DEFAULT_AUTH_DB_PATH))
+    )
+    app.state.auth_db_path = app.state.auth_store.db_path
+    configured_admin_key = admin_key if admin_key is not None else os.getenv(ADMIN_KEY_ENV)
+    app.include_router(create_auth_router(app.state.auth_store, configured_admin_key))
+    app.include_router(create_me_router(app.state.auth_store))
+    current_user = (
+        current_user_dependency(app.state.auth_store)
+        if require_auth
+        else _anonymous_user
+    )
 
     def load_model_for_app() -> StyleAssociationModel:
         return _load_model(app.state.model_path)
@@ -77,6 +104,7 @@ def create_app(model_path: Path | None = None) -> FastAPI:
         tag: str,
         top_n: int = Query(default=20, ge=1, le=100),
         min_user_count: int = Query(default=0, ge=0),
+        _user: AuthUser | None = Depends(current_user),
         model: StyleAssociationModel = Depends(load_model_for_app),
     ) -> dict[str, Any]:
         try:
@@ -88,6 +116,7 @@ def create_app(model_path: Path | None = None) -> FastAPI:
     @app.post("/v1/profile")
     def profile(
         request: ProfileRequest,
+        _user: AuthUser | None = Depends(current_user),
         model: StyleAssociationModel = Depends(load_model_for_app),
     ) -> dict[str, Any]:
         tags = _profile_tags(request)
@@ -111,6 +140,7 @@ def create_app(model_path: Path | None = None) -> FastAPI:
     @app.post("/v1/score")
     def score(
         request: ScoreRequest,
+        _user: AuthUser | None = Depends(current_user),
         model: StyleAssociationModel = Depends(load_model_for_app),
     ) -> dict[str, Any]:
         result = model.score_tags(user_tags=request.user_tags, song_tags=request.song_tags)
@@ -119,6 +149,7 @@ def create_app(model_path: Path | None = None) -> FastAPI:
     @app.post("/v1/rank")
     def rank(
         request: RankRequest,
+        _user: AuthUser | None = Depends(current_user),
         model: StyleAssociationModel = Depends(load_model_for_app),
     ) -> dict[str, Any]:
         if not request.songs:
@@ -140,6 +171,10 @@ def create_app(model_path: Path | None = None) -> FastAPI:
 def get_model() -> StyleAssociationModel:
     model_path = Path(os.getenv(MODEL_PATH_ENV, DEFAULT_MODEL_PATH))
     return _load_model(model_path)
+
+
+def _anonymous_user() -> None:
+    return None
 
 
 @lru_cache(maxsize=8)

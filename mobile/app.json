@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "TasteOS",
-    "slug": "tasteos",
+    "name": "OpenBand",
+    "slug": "openband",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "tasteos",
+    "scheme": "openband",
     "userInterfaceStyle": "automatic",
     "ios": {
       "supportsTablet": true
@@ -33,7 +33,8 @@
           "resizeMode": "contain",
           "backgroundColor": "#ffffff"
         }
-      ]
+      ],
+      "expo-secure-store"
     ],
     "experiments": {
       "typedRoutes": true

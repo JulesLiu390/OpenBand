@@ -1,7 +1,8 @@
 # Music Style Association Model
 
 This project uses the Kaggle `Million Song Dataset + Spotify + Last.fm` data as
-a **style/taste prior** for an AI music platform.
+a **style/taste prior** for a private, friends-only, non-profit AI music
+platform.
 
 The goal is not to recommend the old catalog directly. The goal is to learn:
 
@@ -171,7 +172,7 @@ uv run music-rec rank-songs ai_songs.csv \
 Start the recommendation API:
 
 ```bash
-uv run music-rec serve --model-path models/style_model.joblib --port 8000
+OPENBAND_ADMIN_KEY=change-me uv run music-rec serve --model-path models/style_model.joblib --port 8000
 ```
 
 Open the interactive docs at:
@@ -184,16 +185,72 @@ Useful endpoints:
 
 ```text
 GET  /health
+POST /v1/auth/invite-keys
+POST /v1/auth/login
+POST /v1/auth/refresh
+GET  /v1/me
+GET  /v1/me/music-tags
+PUT  /v1/me/music-tags
 GET  /v1/tags/{tag}/similar
 POST /v1/profile
 POST /v1/score
 POST /v1/rank
 ```
 
+## Auth And Accounts
+
+OpenBand uses one-time invite keys for first login. An admin creates a key, the
+client logs in with it once, and the backend returns a 15-minute access token
+plus a 30-day refresh token. Protected API calls use:
+
+```text
+Authorization: Bearer <access_token>
+```
+
+Create a key:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/auth/invite-keys \
+  -H "Content-Type: application/json" \
+  -H "X-Admin-Key: change-me" \
+  -d '{"label":"Alice"}'
+```
+
+The response includes:
+
+```json
+{
+  "key": "ob_key_...",
+  "qr_payload": "openband://login?key=ob_key_...",
+  "qr_svg": "<?xml version='1.0' encoding='UTF-8'?>..."
+}
+```
+
+Use the key once:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"key":"ob_key_...","device_name":"iPhone"}'
+```
+
+Store music tag preferences for a user:
+
+```bash
+curl -X PUT http://127.0.0.1:8000/v1/me/music-tags \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"tags":["dream pop","synth","ambient"]}'
+```
+
+By default auth state is stored at `runtime/openband.sqlite3`. Override it with
+`OPENBAND_AUTH_DB_PATH=/path/to/openband.sqlite3`.
+
 Build a user taste profile:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/v1/profile \
+  -H "Authorization: Bearer <access_token>" \
   -H "Content-Type: application/json" \
   -d '{"user_tags":"shoegaze; dream pop; female vocalists","top_n":10}'
 ```
@@ -202,6 +259,7 @@ Rank new AI songs by tags:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/v1/rank \
+  -H "Authorization: Bearer <access_token>" \
   -H "Content-Type: application/json" \
   -d '{
     "user_tags": "ambient; piano; sleep",

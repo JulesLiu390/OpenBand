@@ -8,6 +8,22 @@ from music_taste_rec.style_model import StyleTrainingConfig, train_style_model
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures"
 FIXTURE_RAW = FIXTURE_ROOT / "raw"
+ADMIN_KEY = "admin-test-key"
+
+
+def _auth_headers(client: TestClient) -> dict[str, str]:
+    invite = client.post(
+        "/v1/auth/invite-keys",
+        headers={"X-Admin-Key": ADMIN_KEY},
+        json={"label": "Test Friend"},
+    )
+    assert invite.status_code == 200
+    login = client.post(
+        "/v1/auth/login",
+        json={"key": invite.json()["key"], "device_name": "pytest"},
+    )
+    assert login.status_code == 200
+    return {"Authorization": f"Bearer {login.json()['access_token']}"}
 
 
 def test_api_profiles_scores_and_ranks_songs(tmp_path: Path) -> None:
@@ -22,14 +38,28 @@ def test_api_profiles_scores_and_ranks_songs(tmp_path: Path) -> None:
         )
     )
     model.save(model_path)
-    client = TestClient(create_app(model_path=model_path))
+    client = TestClient(
+        create_app(
+            model_path=model_path,
+            auth_db_path=tmp_path / "auth.sqlite3",
+            admin_key=ADMIN_KEY,
+        )
+    )
+    headers = _auth_headers(client)
 
     health = client.get("/health")
     assert health.status_code == 200
     assert health.json()["tags"] == len(model.tags)
 
+    unauthenticated = client.post(
+        "/v1/profile",
+        json={"user_tags": "ambient; piano; sleep", "top_n": 5},
+    )
+    assert unauthenticated.status_code == 401
+
     profile = client.post(
         "/v1/profile",
+        headers=headers,
         json={"user_tags": "ambient; piano; sleep", "top_n": 5},
     )
     assert profile.status_code == 200
@@ -38,6 +68,7 @@ def test_api_profiles_scores_and_ranks_songs(tmp_path: Path) -> None:
 
     score = client.post(
         "/v1/score",
+        headers=headers,
         json={
             "user_tags": "ambient; piano; sleep",
             "song_tags": "ambient; piano",
@@ -48,6 +79,7 @@ def test_api_profiles_scores_and_ranks_songs(tmp_path: Path) -> None:
 
     ranking = client.post(
         "/v1/rank",
+        headers=headers,
         json={
             "user_tags": "ambient; piano; sleep",
             "songs": [
