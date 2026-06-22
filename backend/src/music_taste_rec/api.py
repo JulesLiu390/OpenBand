@@ -17,6 +17,12 @@ from openband.auth import (
     create_me_router,
     current_user_dependency,
 )
+from openband.songs import (
+    DEFAULT_SONG_STORAGE_ROOT,
+    SONG_STORAGE_ROOT_ENV,
+    SongStore,
+    create_song_router,
+)
 from pydantic import BaseModel, Field
 
 from music_taste_rec.style_model import StyleAssociationModel, parse_style_tags
@@ -57,6 +63,7 @@ class RankRequest(BaseModel):
 def create_app(
     model_path: Path | None = None,
     auth_db_path: Path | None = None,
+    song_storage_root: Path | None = None,
     admin_key: str | None = None,
     require_auth: bool = True,
 ) -> FastAPI:
@@ -73,13 +80,24 @@ def create_app(
         allow_headers=["*"],
     )
     app.state.model_path = Path(model_path or os.getenv(MODEL_PATH_ENV, DEFAULT_MODEL_PATH))
-    app.state.auth_store = AuthStore(
-        Path(auth_db_path or os.getenv(AUTH_DB_PATH_ENV, DEFAULT_AUTH_DB_PATH))
+    configured_auth_db_path = Path(auth_db_path or os.getenv(AUTH_DB_PATH_ENV, DEFAULT_AUTH_DB_PATH))
+    app.state.auth_store = AuthStore(configured_auth_db_path)
+    app.state.song_store = SongStore(
+        db_path=configured_auth_db_path,
+        storage_root=Path(song_storage_root or os.getenv(SONG_STORAGE_ROOT_ENV, DEFAULT_SONG_STORAGE_ROOT)),
     )
     app.state.auth_db_path = app.state.auth_store.db_path
     configured_admin_key = admin_key if admin_key is not None else os.getenv(ADMIN_KEY_ENV)
     app.include_router(create_auth_router(app.state.auth_store, configured_admin_key))
     app.include_router(create_me_router(app.state.auth_store))
+    app.include_router(
+        create_song_router(
+            store=app.state.song_store,
+            auth_store=app.state.auth_store,
+            admin_key=configured_admin_key,
+            require_auth=require_auth,
+        )
+    )
     current_user = (
         current_user_dependency(app.state.auth_store)
         if require_auth

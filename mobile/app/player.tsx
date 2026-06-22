@@ -1,11 +1,15 @@
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { SafeAreaView, StyleSheet, Text, View, Pressable } from "react-native";
 
 import { AlbumArt } from "@/components/AlbumArt";
+import { currentTrack } from "@/lib/demo";
 import { artworkPalettes, theme } from "@/lib/theme";
 
 export default function PlayerScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ title?: string | string[]; subtitle?: string | string[] }>();
+  const title = Array.isArray(params.title) ? params.title[0] : params.title;
+  const subtitle = Array.isArray(params.subtitle) ? params.subtitle[0] : params.subtitle;
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -28,10 +32,10 @@ export default function PlayerScreen() {
           <View style={styles.titleRow}>
             <View style={styles.trackCopy}>
               <Text style={styles.songTitle} numberOfLines={1}>
-                Lake Light
+                {title || currentTrack.name}
               </Text>
               <Text style={styles.artist} numberOfLines={1}>
-                Suno Sketch
+                {subtitle || currentTrack.artist}
               </Text>
             </View>
             <Pressable style={({ pressed }) => [styles.favorite, pressed && styles.pressed]}>

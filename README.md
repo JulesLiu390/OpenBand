@@ -1,6 +1,6 @@
 # OpenBand
 
-OpenBand is a private, friends-only, non-profit AI music platform prototype. The repo is split into a mobile client and a FastAPI backend. Music generation, prompt generation, Suno browser automation, authentication, and tag-based recommendation live behind the backend.
+OpenBand is a private, friends-only, non-profit AI music platform prototype. The repo is split into a mobile client and a FastAPI backend. Music generation, prompt generation, Suno browser automation, authentication, the MP3 song library, and tag-based recommendation live behind the backend.
 
 ## Structure
 
@@ -34,6 +34,11 @@ The mobile app uses a first-login invite key. The backend returns a short-lived
 access token plus a refresh token; iOS/Android store the session with
 `expo-secure-store`, while web previews use `localStorage`.
 
+Songs come from the backend song library. The app fetches song metadata from
+FastAPI, downloads MP3 files on demand, and stores cached MP3s with
+`expo-file-system`. MP3 cover art can stay embedded in the file; the first
+library version does not require a separate cover image table.
+
 ## Backend
 
 ```bash
@@ -57,6 +62,10 @@ The current FastAPI app exposes:
 - `POST /v1/auth/refresh`
 - `GET /v1/me`
 - `GET/PUT /v1/me/music-tags`
+- `POST /v1/songs`
+- `GET /v1/songs`
+- `GET /v1/songs/daily`
+- `GET /v1/songs/{song_id}/audio`
 - `GET /v1/tags/{tag}/similar`
 - `POST /v1/profile`
 - `POST /v1/score`
@@ -81,6 +90,23 @@ clients call protected APIs with:
 Authorization: Bearer <access_token>
 ```
 
+Upload an MP3 into the backend song library:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/songs \
+  -H "X-Admin-Key: change-me" \
+  -F "title=Lake Light" \
+  -F "artist=Suno Sketch" \
+  -F "album=Midnight Sketches" \
+  -F "tags=ambient; piano; sleep" \
+  -F "duration_seconds=138" \
+  -F "source=suno" \
+  -F "file=@/path/to/lake-light.mp3;type=audio/mpeg"
+```
+
+By default, MP3 files are stored under `backend/storage/songs` and local SQLite
+state under `backend/runtime`. Both are ignored by git.
+
 Generation helpers:
 
 ```bash
@@ -99,4 +125,4 @@ npm install
 
 ## Local-Only Assets
 
-Training datasets, generated model files, Suno browser sessions, downloaded MP3s, screenshots, `.env` files, and profile/runtime state are intentionally ignored.
+Training datasets, generated model files, backend MP3 storage, Suno browser sessions, downloaded MP3s, screenshots, `.env` files, and profile/runtime state are intentionally ignored.

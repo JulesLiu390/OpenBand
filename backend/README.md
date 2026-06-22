@@ -13,6 +13,11 @@ The goal is not to recommend the old catalog directly. The goal is to learn:
 This matches AI music platforms where songs are new, cold-started, and already
 come with tags or prompt metadata.
 
+OpenBand also has a small backend-owned MP3 song library. The database stores
+song metadata, tags, file size, and file hash; the MP3 file stays on disk. Cover
+art can remain embedded inside the MP3, so this version does not require a
+separate cover image file or table.
+
 ## Setup
 
 ```bash
@@ -191,6 +196,11 @@ POST /v1/auth/refresh
 GET  /v1/me
 GET  /v1/me/music-tags
 PUT  /v1/me/music-tags
+POST /v1/songs
+GET  /v1/songs
+GET  /v1/songs/daily
+GET  /v1/songs/{song_id}
+GET  /v1/songs/{song_id}/audio
 GET  /v1/tags/{tag}/similar
 POST /v1/profile
 POST /v1/score
@@ -245,6 +255,37 @@ curl -X PUT http://127.0.0.1:8000/v1/me/music-tags \
 
 By default auth state is stored at `runtime/openband.sqlite3`. Override it with
 `OPENBAND_AUTH_DB_PATH=/path/to/openband.sqlite3`.
+
+## Song Library
+
+Admin upload stores an MP3 file and creates rows in `songs` and `song_tags`.
+The raw MP3 is not checked into git.
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/songs \
+  -H "X-Admin-Key: change-me" \
+  -F "title=Lake Light" \
+  -F "artist=Suno Sketch" \
+  -F "album=Midnight Sketches" \
+  -F "tags=ambient; piano; sleep" \
+  -F "duration_seconds=138" \
+  -F "source=suno" \
+  -F "file=@/path/to/lake-light.mp3;type=audio/mpeg"
+```
+
+Authenticated clients list and download songs:
+
+```bash
+curl http://127.0.0.1:8000/v1/songs/daily \
+  -H "Authorization: Bearer <access_token>"
+
+curl http://127.0.0.1:8000/v1/songs/song_xxx/audio \
+  -H "Authorization: Bearer <access_token>" \
+  --output lake-light.mp3
+```
+
+By default song files are stored at `storage/songs`. Override it with
+`OPENBAND_SONG_STORAGE_ROOT=/path/to/song-storage`.
 
 Build a user taste profile:
 

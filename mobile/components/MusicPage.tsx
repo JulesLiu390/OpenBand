@@ -19,7 +19,16 @@ export function MusicPage({ children, playerTitle = currentTrack.name, playerSub
     <View style={styles.root}>
       <AppShell>{children}</AppShell>
       <View style={styles.dock}>
-        <PlayerBar onPress={() => router.push("/player")} title={playerTitle} subtitle={playerSubtitle} />
+        <PlayerBar
+          onPress={() =>
+            router.push({
+              pathname: "/player",
+              params: { title: playerTitle, subtitle: playerSubtitle },
+            })
+          }
+          title={playerTitle}
+          subtitle={playerSubtitle}
+        />
       </View>
     </View>
   );

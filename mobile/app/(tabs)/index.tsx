@@ -1,17 +1,83 @@
-import { useState } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { useEffect, useState } from "react";
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { AlbumArt } from "@/components/AlbumArt";
 import { Section } from "@/components/AppShell";
+import { useAuth } from "@/components/AuthProvider";
 import { MusicPage } from "@/components/MusicPage";
 import { currentTrack, dailyCards, dailyTracks } from "@/lib/demo";
+import { Song, cacheSong, formatDuration, getCachedSongUri, listDailySongs, songSubtitle } from "@/lib/songs";
 import { artworkPalettes, theme } from "@/lib/theme";
 
+type CacheStatus = "cached" | "downloading" | "remote";
+
 export default function DailyScreen() {
-  const [selectedTrack, setSelectedTrack] = useState(currentTrack.name);
+  const { session } = useAuth();
+  const [selectedTrack, setSelectedTrack] = useState({
+    title: currentTrack.name,
+    subtitle: currentTrack.artist,
+  });
+  const [songs, setSongs] = useState<Song[]>([]);
+  const [cacheStatus, setCacheStatus] = useState<Record<string, CacheStatus>>({});
+  const [loadingSongs, setLoadingSongs] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+
+    async function loadSongs() {
+      if (!session) {
+        return;
+      }
+      setLoadingSongs(true);
+      try {
+        const response = await listDailySongs(session.accessToken, 20);
+        const statuses: Record<string, CacheStatus> = {};
+        await Promise.all(
+          response.songs.map(async (song) => {
+            statuses[song.id] = (await getCachedSongUri(song)) ? "cached" : "remote";
+          }),
+        );
+        if (mounted) {
+          setSongs(response.songs);
+          setCacheStatus(statuses);
+        }
+      } catch {
+        if (mounted) {
+          setSongs([]);
+        }
+      } finally {
+        if (mounted) {
+          setLoadingSongs(false);
+        }
+      }
+    }
+
+    loadSongs();
+
+    return () => {
+      mounted = false;
+    };
+  }, [session]);
+
+  async function selectSong(song: Song) {
+    setSelectedTrack({ title: song.title, subtitle: songSubtitle(song) });
+    if (!session || cacheStatus[song.id] === "cached" || cacheStatus[song.id] === "downloading") {
+      return;
+    }
+
+    setCacheStatus((current) => ({ ...current, [song.id]: "downloading" }));
+    try {
+      const result = await cacheSong(song, session.accessToken);
+      setCacheStatus((current) => ({ ...current, [song.id]: result.cached ? "cached" : "remote" }));
+    } catch {
+      setCacheStatus((current) => ({ ...current, [song.id]: "remote" }));
+    }
+  }
+
+  const hasRemoteSongs = songs.length > 0;
 
   return (
-    <MusicPage playerTitle={selectedTrack} playerSubtitle={currentTrack.artist}>
+    <MusicPage playerTitle={selectedTrack.title} playerSubtitle={selectedTrack.subtitle}>
       <Section>
         <Text style={styles.eyebrow}>Today</Text>
         <Text style={styles.title}>Daily</Text>
@@ -23,7 +89,9 @@ export default function DailyScreen() {
           <View style={styles.heroCopy}>
             <Text style={styles.heroLabel}>Daily Pulse</Text>
             <Text style={styles.heroTitle}>New Music Flow</Text>
-            <Text style={styles.heroMeta}>Fresh tracks for the day</Text>
+            <Text style={styles.heroMeta}>
+              {hasRemoteSongs ? `${songs.length} fresh tracks ready` : "Fresh tracks for the day"}
+            </Text>
           </View>
         </View>
       </Section>
@@ -46,25 +114,52 @@ export default function DailyScreen() {
       </Section>
 
       <Section>
-        <Text style={styles.sectionTitle}>Fresh Today</Text>
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>Fresh Today</Text>
+          {loadingSongs ? <ActivityIndicator color={theme.colors.tint} size="small" /> : null}
+        </View>
         <View style={styles.list}>
-          {dailyTracks.map((track, index) => (
-            <Pressable
-              key={track.id}
-              onPress={() => setSelectedTrack(track.name)}
-              style={({ pressed }) => [styles.trackRow, pressed && styles.pressed]}>
-              <AlbumArt colors={artworkPalettes[index % artworkPalettes.length]} size={50} />
-              <View style={styles.trackCopy}>
-                <Text style={styles.trackTitle} numberOfLines={1}>
-                  {track.name}
-                </Text>
-                <Text style={styles.trackMeta} numberOfLines={1}>
-                  {track.artist} · {track.collection}
-                </Text>
-              </View>
-              <Text style={styles.duration}>{track.duration}</Text>
-            </Pressable>
-          ))}
+          {hasRemoteSongs
+            ? songs.map((song, index) => (
+                <Pressable
+                  key={song.id}
+                  onPress={() => selectSong(song)}
+                  style={({ pressed }) => [styles.trackRow, pressed && styles.pressed]}>
+                  <AlbumArt colors={artworkPalettes[index % artworkPalettes.length]} size={50} />
+                  <View style={styles.trackCopy}>
+                    <Text style={styles.trackTitle} numberOfLines={1}>
+                      {song.title}
+                    </Text>
+                    <Text style={styles.trackMeta} numberOfLines={1}>
+                      {songSubtitle(song)}
+                    </Text>
+                  </View>
+                  <Text style={[styles.duration, cacheStatus[song.id] === "cached" && styles.cached]}>
+                    {cacheStatus[song.id] === "downloading"
+                      ? "Saving"
+                      : cacheStatus[song.id] === "cached"
+                        ? "Cached"
+                        : formatDuration(song.duration_seconds)}
+                  </Text>
+                </Pressable>
+              ))
+            : dailyTracks.map((track, index) => (
+                <Pressable
+                  key={track.id}
+                  onPress={() => setSelectedTrack({ title: track.name, subtitle: track.artist })}
+                  style={({ pressed }) => [styles.trackRow, pressed && styles.pressed]}>
+                  <AlbumArt colors={artworkPalettes[index % artworkPalettes.length]} size={50} />
+                  <View style={styles.trackCopy}>
+                    <Text style={styles.trackTitle} numberOfLines={1}>
+                      {track.name}
+                    </Text>
+                    <Text style={styles.trackMeta} numberOfLines={1}>
+                      {track.artist} · {track.collection}
+                    </Text>
+                  </View>
+                  <Text style={styles.duration}>{track.duration}</Text>
+                </Pressable>
+              ))}
         </View>
       </Section>
     </MusicPage>
@@ -144,6 +239,12 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: "900",
   },
+  sectionHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    minHeight: 24,
+  },
   list: {
     gap: 8,
   },
@@ -175,6 +276,9 @@ const styles = StyleSheet.create({
     color: theme.colors.tertiaryText,
     fontSize: 12,
     fontWeight: "800",
+  },
+  cached: {
+    color: theme.colors.tint,
   },
   pressed: {
     opacity: 0.78,

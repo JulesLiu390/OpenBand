@@ -16,6 +16,7 @@ backend/.pytest_cache/
 backend/data/
 backend/models/
 backend/runtime/
+backend/storage/
 backend/src/openband/suno_browser/playwright/node_modules/
 backend/src/openband/suno_browser/playwright/suno-storage-state.json
 backend/src/openband/suno_browser/playwright/suno-chrome-profile/
