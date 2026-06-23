@@ -5,17 +5,32 @@ import { AlbumArt } from "@/components/AlbumArt";
 import { Section } from "@/components/AppShell";
 import { useAuth } from "@/components/AuthProvider";
 import { MusicPage } from "@/components/MusicPage";
-import { libraryAlbums, libraryShortcuts } from "@/lib/demo";
-import { Song, cacheSong, getCachedSongUri, listSongs, readableFileSize, songSubtitle } from "@/lib/songs";
+import { usePlayer } from "@/components/PlayerProvider";
+import { SongActionMenu } from "@/components/SongActionMenu";
+import { SongArtwork } from "@/components/SongArtwork";
+import { libraryAlbums } from "@/lib/demo";
+import {
+  Song,
+  SongCacheStatus,
+  cacheSong,
+  cacheSongs,
+  getSongCacheStatuses,
+  listAllSongs,
+  loadCachedSongs,
+  readableFileSize,
+  saveSongCatalog,
+  songSubtitle,
+} from "@/lib/songs";
 import { artworkPalettes, theme } from "@/lib/theme";
-
-type CacheStatus = "cached" | "downloading" | "remote";
 
 export default function LibraryScreen() {
   const { session } = useAuth();
+  const { busySongId, currentSong, isPlaying, playSong, updateCurrentSongLike } = usePlayer();
   const [songs, setSongs] = useState<Song[]>([]);
-  const [songTotal, setSongTotal] = useState(0);
-  const [cacheStatus, setCacheStatus] = useState<Record<string, CacheStatus>>({});
+  const [cacheStatus, setCacheStatus] = useState<Record<string, SongCacheStatus>>({});
+  const [bulkDownloading, setBulkDownloading] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState("");
+  const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [playerTrack, setPlayerTrack] = useState({
     title: "Lake Light",
     subtitle: "Suno Sketch",
@@ -26,25 +41,26 @@ export default function LibraryScreen() {
 
     async function loadSongs() {
       if (!session) {
+        setSongs([]);
+        setCacheStatus({});
         return;
       }
       try {
-        const response = await listSongs(session.accessToken, 50);
-        const statuses: Record<string, CacheStatus> = {};
-        await Promise.all(
-          response.songs.map(async (song) => {
-            statuses[song.id] = (await getCachedSongUri(song)) ? "cached" : "remote";
-          }),
-        );
+        const response = await listAllSongs(session.accessToken);
+        await saveSongCatalog(session.user.id, response.songs);
+        const statuses = await getSongCacheStatuses(response.songs);
         if (mounted) {
           setSongs(response.songs);
-          setSongTotal(response.total);
           setCacheStatus(statuses);
+          setSyncMessage(null);
         }
       } catch {
+        const cachedSongs = await loadCachedSongs(session.user.id);
+        const statuses = await getSongCacheStatuses(cachedSongs);
         if (mounted) {
-          setSongs([]);
-          setSongTotal(0);
+          setSongs(cachedSongs);
+          setCacheStatus(statuses);
+          setSyncMessage(cachedSongs.length ? "Offline library loaded from this phone." : "Library could not load.");
         }
       }
     }
@@ -57,36 +73,100 @@ export default function LibraryScreen() {
   }, [session]);
 
   const shortcuts = useMemo(() => {
-    if (songs.length === 0) {
-      return libraryShortcuts;
-    }
-    const artists = new Set(songs.map((song) => song.artist).filter(Boolean));
-    const tags = new Set(songs.flatMap((song) => song.tags));
     const downloaded = Object.values(cacheStatus).filter((status) => status === "cached").length;
+    const tags = new Set(songs.flatMap((song) => song.tags).filter(Boolean));
     return [
-      { label: "Songs", value: String(songTotal) },
-      { label: "Artists", value: String(artists.size) },
-      { label: "Downloaded", value: String(downloaded) },
       { label: "Tags", value: String(tags.size) },
+      { label: "Downloaded", value: String(downloaded) },
     ];
-  }, [cacheStatus, songTotal, songs]);
+  }, [cacheStatus, songs]);
 
   async function selectSong(song: Song) {
     setPlayerTrack({ title: song.title, subtitle: songSubtitle(song) });
-    if (!session || cacheStatus[song.id] === "cached" || cacheStatus[song.id] === "downloading") {
+    if (!session || cacheStatus[song.id] === "downloading") {
       return;
     }
 
-    setCacheStatus((current) => ({ ...current, [song.id]: "downloading" }));
+    if (cacheStatus[song.id] !== "cached") {
+      setCacheStatus((current) => ({ ...current, [song.id]: "downloading" }));
+    }
     try {
-      const result = await cacheSong(song, session.accessToken);
-      setCacheStatus((current) => ({ ...current, [song.id]: result.cached ? "cached" : "remote" }));
+      const result = await playSong(song, undefined, { source: "library" });
+      if (result) {
+        setCacheStatus((current) => ({ ...current, [song.id]: result.cached ? "cached" : "remote" }));
+      } else if (cacheStatus[song.id] !== "cached") {
+        setCacheStatus((current) => ({ ...current, [song.id]: "remote" }));
+      }
     } catch {
       setCacheStatus((current) => ({ ...current, [song.id]: "remote" }));
     }
   }
 
+  async function downloadSong(song: Song) {
+    if (!session || cacheStatus[song.id] === "downloading") {
+      return;
+    }
+    setCacheStatus((current) => ({ ...current, [song.id]: "downloading" }));
+    try {
+      await cacheSong(song, session.accessToken);
+      setCacheStatus((current) => ({ ...current, [song.id]: "cached" }));
+    } catch (exc) {
+      setCacheStatus((current) => ({ ...current, [song.id]: "remote" }));
+      throw exc;
+    }
+  }
+
+  async function downloadAllSongs() {
+    if (!session || bulkDownloading) {
+      return;
+    }
+    const pendingSongs = songs.filter((song) => cacheStatus[song.id] !== "cached");
+    if (pendingSongs.length === 0) {
+      setSyncMessage("All songs are already downloaded.");
+      return;
+    }
+
+    setBulkDownloading(true);
+    setBulkProgress(`0/${pendingSongs.length}`);
+    setSyncMessage(null);
+    setCacheStatus((current) => {
+      const next = { ...current };
+      for (const song of pendingSongs) {
+        next[song.id] = "downloading";
+      }
+      return next;
+    });
+
+    let failed = 0;
+    try {
+      await cacheSongs(pendingSongs, session.accessToken, {
+        concurrency: 3,
+        onProgress: (item, completed, total) => {
+          if (item.error) {
+            failed += 1;
+          }
+          setBulkProgress(`${completed}/${total}`);
+          setCacheStatus((current) => ({
+            ...current,
+            [item.song.id]: item.error ? "remote" : "cached",
+          }));
+        },
+      });
+      setSyncMessage(failed ? `${failed} songs could not be downloaded.` : "Offline download complete.");
+    } finally {
+      setBulkDownloading(false);
+    }
+  }
+
+  function updateSongLike(songId: string, isLiked: boolean, likedAt: string | null) {
+    setSongs((current) =>
+      current.map((song) => (song.id === songId ? { ...song, is_liked: isLiked, liked_at: likedAt } : song)),
+    );
+    updateCurrentSongLike(songId, isLiked, likedAt);
+  }
+
   const hasRemoteSongs = songs.length > 0;
+  const pendingDownloadCount = songs.filter((song) => cacheStatus[song.id] !== "cached").length;
 
   return (
     <MusicPage playerTitle={playerTrack.title} playerSubtitle={playerTrack.subtitle}>
@@ -104,36 +184,70 @@ export default function LibraryScreen() {
             </View>
           ))}
         </View>
+        {hasRemoteSongs ? (
+          <Pressable
+            accessibilityRole="button"
+            disabled={bulkDownloading || pendingDownloadCount === 0}
+            onPress={downloadAllSongs}
+            style={({ pressed }) => [
+              styles.downloadAllButton,
+              pressed && styles.pressed,
+              (bulkDownloading || pendingDownloadCount === 0) && styles.disabled,
+            ]}>
+            <Text style={styles.downloadAllText}>
+              {bulkDownloading
+                ? `Downloading ${bulkProgress}`
+                : pendingDownloadCount === 0
+                  ? "All Songs Downloaded"
+                  : `Download All (${pendingDownloadCount})`}
+            </Text>
+          </Pressable>
+        ) : null}
+        {syncMessage ? <Text style={styles.syncMessage}>{syncMessage}</Text> : null}
       </Section>
 
       <Section>
         <Text style={styles.sectionTitle}>Recently Added</Text>
         <View style={styles.list}>
           {hasRemoteSongs
-            ? songs.map((song, index) => (
-                <Pressable
-                  key={song.id}
-                  onPress={() => selectSong(song)}
-                  style={({ pressed }) => [styles.row, pressed && styles.pressed]}>
-                  <AlbumArt colors={artworkPalettes[index % artworkPalettes.length]} size={58} />
-                  <View style={styles.rowCopy}>
-                    <Text style={styles.rowTitle} numberOfLines={1}>
-                      {song.title}
-                    </Text>
-                    <Text style={styles.rowMeta} numberOfLines={1}>
-                      {songSubtitle(song)}
-                    </Text>
-                    <Text style={styles.rowDetail} numberOfLines={1}>
-                      {cacheStatus[song.id] === "cached"
-                        ? "Cached"
-                        : cacheStatus[song.id] === "downloading"
-                          ? "Saving"
-                          : `${readableFileSize(song.file_size)} · ${song.tags.slice(0, 3).join(", ")}`}
-                    </Text>
-                  </View>
-                  <Text style={styles.more}>⋯</Text>
-                </Pressable>
-              ))
+            ? songs.map((song, index) => {
+                const displaySong = currentSong?.id === song.id ? currentSong : song;
+                return (
+                  <Pressable
+                    key={song.id}
+                    onPress={() => selectSong(song)}
+                    style={({ pressed }) => [styles.row, pressed && styles.pressed]}>
+                    <SongArtwork
+                      accessToken={session?.accessToken ?? null}
+                      colors={artworkPalettes[index % artworkPalettes.length]}
+                      size={58}
+                      song={displaySong}
+                    />
+                    <View style={styles.rowCopy}>
+                      <View style={styles.titleLine}>
+                        <Text style={styles.rowTitle} numberOfLines={1}>
+                          {displaySong.title}
+                        </Text>
+                        {displaySong.is_liked ? <Text style={styles.likeBadge}>♥</Text> : null}
+                      </View>
+                      <Text style={styles.rowMeta} numberOfLines={1}>
+                        {songSubtitle(displaySong)}
+                      </Text>
+                      <Text style={styles.rowDetail} numberOfLines={1}>
+                        {songDetailText(song, cacheStatus[song.id], busySongId, currentSong?.id, isPlaying)}
+                      </Text>
+                    </View>
+                    <SongActionMenu
+                      accessToken={session?.accessToken ?? null}
+                      isDownloaded={cacheStatus[displaySong.id] === "cached"}
+                      isLiked={Boolean(displaySong.is_liked)}
+                      onDownload={downloadSong}
+                      onLikeChanged={updateSongLike}
+                      song={displaySong}
+                    />
+                  </Pressable>
+                );
+              })
             : libraryAlbums.map((album, index) => (
                 <View key={album.title} style={styles.row}>
                   <AlbumArt colors={artworkPalettes[index % artworkPalettes.length]} size={58} />
@@ -155,6 +269,25 @@ export default function LibraryScreen() {
       </Section>
     </MusicPage>
   );
+}
+
+function songDetailText(
+  song: Song,
+  cacheStatus: SongCacheStatus | undefined,
+  busySongId: string | null,
+  currentSongId: string | undefined,
+  isPlaying: boolean,
+): string {
+  if (busySongId === song.id || cacheStatus === "downloading") {
+    return "Loading";
+  }
+  if (currentSongId === song.id && isPlaying) {
+    return "Playing";
+  }
+  if (cacheStatus === "cached") {
+    return "Cached";
+  }
+  return `${readableFileSize(song.file_size)} · ${song.tags.slice(0, 3).join(", ")}`;
 }
 
 const styles = StyleSheet.create({
@@ -193,6 +326,24 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     marginTop: 6,
   },
+  downloadAllButton: {
+    alignItems: "center",
+    backgroundColor: theme.colors.tint,
+    borderRadius: theme.radius.pill,
+    minHeight: 42,
+    justifyContent: "center",
+    paddingHorizontal: 16,
+  },
+  downloadAllText: {
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "900",
+  },
+  syncMessage: {
+    color: theme.colors.secondaryText,
+    fontSize: 12,
+    fontWeight: "800",
+  },
   sectionTitle: {
     color: theme.colors.text,
     fontSize: 20,
@@ -214,10 +365,23 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
   },
+  titleLine: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 6,
+    minWidth: 0,
+  },
   rowTitle: {
     color: theme.colors.text,
+    flexShrink: 1,
     fontSize: 16,
     fontWeight: "900",
+  },
+  likeBadge: {
+    color: theme.colors.tint,
+    fontSize: 13,
+    fontWeight: "900",
+    lineHeight: 14,
   },
   rowMeta: {
     color: theme.colors.secondaryText,
@@ -238,5 +402,8 @@ const styles = StyleSheet.create({
   },
   pressed: {
     opacity: 0.78,
+  },
+  disabled: {
+    opacity: 0.52,
   },
 });

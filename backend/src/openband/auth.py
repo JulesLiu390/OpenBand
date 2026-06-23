@@ -8,9 +8,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import urlencode, urlparse
 
 import qrcode
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from qrcode.image.svg import SvgPathImage
@@ -43,6 +44,7 @@ class CreateInviteKeyRequest(BaseModel):
     label: str = Field(min_length=1, max_length=120)
     note: str = Field(default="", max_length=500)
     expires_at: str | None = None
+    base_url: str | None = Field(default=None, max_length=500)
 
 
 class InviteKeyResponse(BaseModel):
@@ -97,6 +99,7 @@ class AuthStore:
         label: str,
         note: str = "",
         expires_at: str | None = None,
+        base_url: str,
     ) -> dict[str, Any]:
         key = _new_secret(INVITE_KEY_PREFIX)
         now = utc_now()
@@ -109,7 +112,7 @@ class AuthStore:
                 (label.strip(), hash_secret(key, "invite"), note.strip(), now, expires_at),
             )
             invite_id = int(cursor.lastrowid)
-        qr_payload = f"openband://login?key={key}"
+        qr_payload = invite_qr_payload(key=key, base_url=base_url)
         return {
             "id": invite_id,
             "label": label.strip(),
@@ -139,14 +142,22 @@ class AuthStore:
             if invite["expires_at"] and invite["expires_at"] <= now:
                 raise AuthError("Invite key has expired.")
 
-            cursor = conn.execute(
-                """
-                INSERT INTO users (label, invite_key_id, created_at)
-                VALUES (?, ?, ?)
-                """,
-                (invite["label"], invite["id"], now),
-            )
-            user_id = int(cursor.lastrowid)
+            bound_user_id = int(invite["claimed_by_user_id"]) if invite["claimed_by_user_id"] else None
+            if bound_user_id is not None:
+                user_id = bound_user_id
+                user = self._get_user(conn, user_id)
+                if user is None:
+                    raise AuthError("Bound user not found.")
+            else:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO users (label, invite_key_id, created_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (invite["label"], invite["id"], now),
+                )
+                user_id = int(cursor.lastrowid)
+                user = self._get_user(conn, user_id)
             conn.execute(
                 """
                 UPDATE invite_keys
@@ -155,7 +166,6 @@ class AuthStore:
                 """,
                 (now, user_id, invite["id"]),
             )
-            user = self._get_user(conn, user_id)
             return self._issue_token_pair(conn, user, device_name=device_name)
 
     def refresh_token(self, refresh_token: str) -> dict[str, Any]:
@@ -373,7 +383,11 @@ class AuthStore:
             )
 
 
-def create_auth_router(store: AuthStore, admin_key: str | None = None) -> APIRouter:
+def create_auth_router(
+    store: AuthStore,
+    admin_key: str | None = None,
+    public_base_url: str | None = None,
+) -> APIRouter:
     router = APIRouter(prefix="/v1/auth", tags=["auth"])
 
     def require_admin(x_admin_key: Annotated[str | None, Header()] = None) -> None:
@@ -383,11 +397,17 @@ def create_auth_router(store: AuthStore, admin_key: str | None = None) -> APIRou
             raise HTTPException(status_code=403, detail="Invalid admin key.")
 
     @router.post("/invite-keys", response_model=InviteKeyResponse, dependencies=[Depends(require_admin)])
-    def create_invite_key(request: CreateInviteKeyRequest) -> dict[str, Any]:
+    def create_invite_key(request_body: CreateInviteKeyRequest, request: Request) -> dict[str, Any]:
+        base_url = request_body.base_url or public_base_url or str(request.base_url)
+        try:
+            normalized_base_url = normalize_api_base_url(base_url)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         return store.create_invite_key(
-            label=request.label,
-            note=request.note,
-            expires_at=request.expires_at,
+            label=request_body.label,
+            note=request_body.note,
+            expires_at=request_body.expires_at,
+            base_url=normalized_base_url,
         )
 
     @router.post("/login", response_model=TokenResponse)
@@ -467,6 +487,24 @@ def format_utc(value: datetime) -> str:
 
 def _new_secret(prefix: str) -> str:
     return f"{prefix}{secrets.token_urlsafe(32)}"
+
+
+def invite_qr_payload(*, key: str, base_url: str) -> str:
+    params = {
+        "key": key,
+        "base_url": normalize_api_base_url(base_url),
+    }
+    return f"openband://login?{urlencode(params)}"
+
+
+def normalize_api_base_url(value: str) -> str:
+    clean_value = value.strip().rstrip("/")
+    if not clean_value:
+        raise ValueError("API base URL must be configured before creating invite QR codes.")
+    parsed = urlparse(clean_value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("API base URL must start with http:// or https://.")
+    return clean_value
 
 
 def qr_svg(payload: str) -> str:

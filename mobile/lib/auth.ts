@@ -2,10 +2,14 @@ import * as SecureStore from "expo-secure-store";
 import { Platform } from "react-native";
 
 const SESSION_STORAGE_KEY = "openband.auth.session";
+const API_BASE_STORAGE_KEY = "openband.api.base_url";
 
-export const API_BASE_URL = (
+export const DEFAULT_API_BASE_URL = (
   process.env.EXPO_PUBLIC_API_URL || "http://127.0.0.1:8000"
 ).replace(/\/$/, "");
+export const API_BASE_URL = DEFAULT_API_BASE_URL;
+
+let activeApiBaseUrl = DEFAULT_API_BASE_URL;
 
 export type AuthUser = {
   id: number;
@@ -20,6 +24,7 @@ export type AuthSession = {
   accessExpiresAt: number;
   refreshExpiresAt: number;
   user: AuthUser;
+  apiBaseUrl: string;
 };
 
 type TokenResponse = {
@@ -44,8 +49,13 @@ export class ApiError extends Error {
   }
 }
 
-export async function loginWithInviteKey(key: string, deviceName: string): Promise<AuthSession> {
-  const response = await fetch(apiUrl("/v1/auth/login"), {
+export async function loginWithInviteKey(
+  key: string,
+  deviceName: string,
+  apiBaseUrl?: string,
+): Promise<AuthSession> {
+  const baseUrl = apiBaseUrl ? normalizeApiBaseUrl(apiBaseUrl) : getApiBaseUrl();
+  const response = await fetch(apiUrl("/v1/auth/login", baseUrl), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -53,7 +63,9 @@ export async function loginWithInviteKey(key: string, deviceName: string): Promi
     body: JSON.stringify({ key, device_name: deviceName }),
   });
   await assertOk(response);
-  return tokenResponseToSession((await response.json()) as TokenResponse);
+  const session = tokenResponseToSession((await response.json()) as TokenResponse, baseUrl);
+  await saveApiBaseUrl(baseUrl);
+  return session;
 }
 
 export async function refreshAuthSession(refreshToken: string): Promise<AuthSession> {
@@ -96,7 +108,9 @@ export function authFetch(path: string, accessToken: string, init: RequestInit =
 }
 
 export async function saveStoredSession(session: AuthSession): Promise<void> {
-  await setStorageItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+  const sessionWithBaseUrl = { ...session, apiBaseUrl: normalizeApiBaseUrl(session.apiBaseUrl) };
+  await saveApiBaseUrl(sessionWithBaseUrl.apiBaseUrl);
+  await setStorageItem(SESSION_STORAGE_KEY, JSON.stringify(sessionWithBaseUrl));
 }
 
 export async function loadStoredSession(): Promise<AuthSession | null> {
@@ -106,11 +120,10 @@ export async function loadStoredSession(): Promise<AuthSession | null> {
   }
   try {
     const session = JSON.parse(value) as AuthSession;
-    if (session.refreshExpiresAt <= Date.now()) {
-      await clearStoredSession();
-      return null;
-    }
-    return session;
+    const apiBaseUrl = session.apiBaseUrl
+      ? await saveApiBaseUrl(session.apiBaseUrl)
+      : await loadStoredApiBaseUrl();
+    return { ...session, apiBaseUrl };
   } catch {
     await clearStoredSession();
     return null;
@@ -121,11 +134,48 @@ export async function clearStoredSession(): Promise<void> {
   await deleteStorageItem(SESSION_STORAGE_KEY);
 }
 
+export function getApiBaseUrl(): string {
+  return activeApiBaseUrl;
+}
+
+export async function loadStoredApiBaseUrl(): Promise<string> {
+  const value = await getStorageItem(API_BASE_STORAGE_KEY);
+  if (!value) {
+    activeApiBaseUrl = DEFAULT_API_BASE_URL;
+    return activeApiBaseUrl;
+  }
+  try {
+    activeApiBaseUrl = normalizeApiBaseUrl(value);
+  } catch {
+    activeApiBaseUrl = DEFAULT_API_BASE_URL;
+    await deleteStorageItem(API_BASE_STORAGE_KEY);
+  }
+  return activeApiBaseUrl;
+}
+
+export async function saveApiBaseUrl(value: string): Promise<string> {
+  activeApiBaseUrl = normalizeApiBaseUrl(value);
+  await setStorageItem(API_BASE_STORAGE_KEY, activeApiBaseUrl);
+  return activeApiBaseUrl;
+}
+
+export function normalizeApiBaseUrl(value: string): string {
+  const trimmedValue = value.trim().replace(/\/+$/, "");
+  if (!trimmedValue) {
+    throw new Error("Missing API base URL.");
+  }
+  const parsed = new URL(trimmedValue);
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("API base URL must start with http:// or https://.");
+  }
+  return parsed.toString().replace(/\/$/, "");
+}
+
 export function isAccessTokenFresh(session: AuthSession): boolean {
   return session.accessExpiresAt - 30_000 > Date.now();
 }
 
-function tokenResponseToSession(response: TokenResponse): AuthSession {
+function tokenResponseToSession(response: TokenResponse, apiBaseUrl = getApiBaseUrl()): AuthSession {
   const now = Date.now();
   return {
     accessToken: response.access_token,
@@ -134,11 +184,12 @@ function tokenResponseToSession(response: TokenResponse): AuthSession {
     accessExpiresAt: now + response.expires_in * 1000,
     refreshExpiresAt: now + response.refresh_expires_in * 1000,
     user: response.user,
+    apiBaseUrl,
   };
 }
 
-function apiUrl(path: string): string {
-  return `${API_BASE_URL}${path}`;
+function apiUrl(path: string, apiBaseUrl = getApiBaseUrl()): string {
+  return `${apiBaseUrl}${path}`;
 }
 
 async function assertOk(response: Response): Promise<void> {

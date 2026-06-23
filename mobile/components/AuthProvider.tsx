@@ -2,11 +2,13 @@ import { PropsWithChildren, createContext, useCallback, useContext, useEffect, u
 import { Platform } from "react-native";
 
 import {
+  ApiError,
   AuthSession,
   AuthUser,
   clearStoredSession,
   getMe,
   isAccessTokenFresh,
+  loadStoredApiBaseUrl,
   loadStoredSession,
   loginWithInviteKey,
   logoutSession,
@@ -19,7 +21,7 @@ type AuthContextValue = {
   session: AuthSession | null;
   loading: boolean;
   isAuthenticated: boolean;
-  login: (key: string) => Promise<void>;
+  login: (key: string, options?: { apiBaseUrl?: string }) => Promise<void>;
   logout: () => Promise<void>;
 };
 
@@ -43,19 +45,48 @@ export function AuthProvider({ children }: PropsWithChildren) {
       try {
         const storedSession = await loadStoredSession();
         if (!storedSession) {
+          await loadStoredApiBaseUrl();
           return;
         }
 
         if (isAccessTokenFresh(storedSession)) {
-          const currentUser = await getMe(storedSession.accessToken);
+          let currentUser: AuthUser;
+          try {
+            currentUser = await getMe(storedSession.accessToken);
+          } catch (exc) {
+            if (shouldClearStoredSession(exc)) {
+              await clearStoredSession();
+              return;
+            }
+            if (mounted) {
+              setSession(storedSession);
+              setUser(storedSession.user);
+            }
+            return;
+          }
           if (mounted) {
-            setSession({ ...storedSession, user: currentUser });
+            const nextSession = { ...storedSession, user: currentUser };
+            setSession(nextSession);
             setUser(currentUser);
+            await saveStoredSession(nextSession);
           }
           return;
         }
 
-        const refreshedSession = await refreshAuthSession(storedSession.refreshToken);
+        let refreshedSession: AuthSession;
+        try {
+          refreshedSession = await refreshAuthSession(storedSession.refreshToken);
+        } catch (exc) {
+          if (shouldClearStoredSession(exc)) {
+            await clearStoredSession();
+            return;
+          }
+          if (mounted) {
+            setSession(storedSession);
+            setUser(storedSession.user);
+          }
+          return;
+        }
         if (mounted) {
           setSession(refreshedSession);
           setUser(refreshedSession.user);
@@ -82,8 +113,8 @@ export function AuthProvider({ children }: PropsWithChildren) {
   }, []);
 
   const login = useCallback(
-    async (key: string) => {
-      const nextSession = await loginWithInviteKey(key, `OpenBand ${Platform.OS}`);
+    async (key: string, options?: { apiBaseUrl?: string }) => {
+      const nextSession = await loginWithInviteKey(key, `OpenBand ${Platform.OS}`, options?.apiBaseUrl);
       await applySession(nextSession);
     },
     [applySession],
@@ -117,6 +148,10 @@ export function AuthProvider({ children }: PropsWithChildren) {
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+}
+
+function shouldClearStoredSession(exc: unknown): boolean {
+  return exc instanceof ApiError && (exc.status === 401 || exc.status === 403);
 }
 
 export function useAuth() {

@@ -26,7 +26,7 @@ def _auth_headers(client: TestClient) -> dict[str, str]:
     return {"Authorization": f"Bearer {login.json()['access_token']}"}
 
 
-def test_api_profiles_scores_and_ranks_songs(tmp_path: Path) -> None:
+def test_api_profiles_scores_and_ranks_songs(tmp_path: Path, monkeypatch) -> None:
     model_path = tmp_path / "style_model.joblib"
     model = train_style_model(
         StyleTrainingConfig(
@@ -103,3 +103,40 @@ def test_api_profiles_scores_and_ranks_songs(tmp_path: Path) -> None:
     )
     assert ranking.status_code == 200
     assert ranking.json()["ranked_songs"][0]["track_id"] == "ai_ambient"
+
+    from openband.prompt_generation.profile_service import GeneratedMusicProfile
+
+    def fake_generate_music_profile(**kwargs) -> GeneratedMusicProfile:
+        assert "Cowboy Bebop" in kwargs["input_text"]
+        return GeneratedMusicProfile(
+            input_text=kwargs["input_text"],
+            reference_summary="用户喜欢氛围钢琴和爵士原声。",
+            source_notes="Cowboy Bebop -> jazz soundtrack.",
+            tags=["ambient", "piano", "jazz"],
+            raw_tags=["ambient", "piano", "jazz"],
+            known_tags=["ambient", "piano", "jazz"],
+            corrected_tags=[],
+            unknown_tags=[],
+            profile_output_text="TAGS:\nambient, piano, jazz",
+        )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("music_taste_rec.api.generate_music_profile", fake_generate_music_profile)
+
+    seeded = client.post(
+        "/v1/me/music-tags/profile",
+        headers=headers,
+        json={
+            "favorite_bands": "ambient piano",
+            "favorite_anime": "Cowboy Bebop",
+        },
+    )
+    assert seeded.status_code == 200
+    seeded_body = seeded.json()
+    assert "ambient" in seeded_body["tags"]
+    assert "piano" in seeded_body["tags"]
+    assert seeded_body["updated_at"]
+
+    fetched_tags = client.get("/v1/me/music-tags", headers=headers)
+    assert fetched_tags.status_code == 200
+    assert fetched_tags.json()["tags"] == seeded_body["tags"]

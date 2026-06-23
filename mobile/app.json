@@ -8,9 +8,17 @@
     "scheme": "openband",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "OpenBand uses the camera to scan invite QR codes.",
+        "NSPhotoLibraryUsageDescription": "OpenBand uses your photo library to read invite QR code images."
+      }
     },
     "android": {
+      "package": "com.openband.app",
+      "permissions": [
+        "android.permission.CAMERA"
+      ],
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -34,7 +42,26 @@
           "backgroundColor": "#ffffff"
         }
       ],
-      "expo-secure-store"
+      "expo-secure-store",
+      [
+        "expo-audio",
+        {
+          "enableBackgroundPlayback": true,
+          "recordAudioAndroid": false
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "OpenBand uses the camera to scan invite QR codes."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "OpenBand uses your photo library to read invite QR code images."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

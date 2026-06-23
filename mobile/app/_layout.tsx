@@ -5,6 +5,7 @@ import { useEffect } from 'react';
 import 'react-native-reanimated';
 
 import { AuthProvider } from '@/components/AuthProvider';
+import { PlayerProvider } from '@/components/PlayerProvider';
 import { useColorScheme } from '@/components/useColorScheme';
 
 export {
@@ -42,7 +43,9 @@ export default function RootLayout() {
 
   return (
     <AuthProvider>
-      <RootLayoutNav />
+      <PlayerProvider>
+        <RootLayoutNav />
+      </PlayerProvider>
     </AuthProvider>
   );
 }
@@ -54,6 +57,7 @@ function RootLayoutNav() {
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
       <Stack>
         <Stack.Screen name="login" options={{ headerShown: false }} />
+        <Stack.Screen name="onboarding" options={{ headerShown: false }} />
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="player" options={{ headerShown: false }} />
       </Stack>

@@ -201,6 +201,11 @@ GET  /v1/songs
 GET  /v1/songs/daily
 GET  /v1/songs/{song_id}
 GET  /v1/songs/{song_id}/audio
+GET  /v1/daily/today
+POST /v1/daily/today/generate
+GET  /v1/daily/history
+GET  /v1/daily/{date}
+GET  /v1/daily/jobs/{job_id}
 GET  /v1/tags/{tag}/similar
 POST /v1/profile
 POST /v1/score
@@ -286,6 +291,53 @@ curl http://127.0.0.1:8000/v1/songs/song_xxx/audio \
 
 By default song files are stored at `storage/songs`. Override it with
 `OPENBAND_SONG_STORAGE_ROOT=/path/to/song-storage`.
+
+## Daily Playlists
+
+Daily playlists are system-generated archives. They reference songs from the
+same `songs` library, but they are stored separately from user-created
+`/v1/playlists`.
+
+The generation pipeline is:
+
+```text
+user taste tags -> dated tag clusters -> daily playlist plan -> per-song Suno prompts -> 5-song Suno batch queue -> MP3 import -> Daily YYYY-MM-DD
+```
+
+Useful endpoints:
+
+```bash
+curl http://127.0.0.1:8000/v1/daily/today \
+  -H "Authorization: Bearer <access_token>"
+
+curl -X POST http://127.0.0.1:8000/v1/daily/today/generate \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"date":"2026-06-22"}'
+
+curl http://127.0.0.1:8000/v1/daily/history \
+  -H "Authorization: Bearer <access_token>"
+```
+
+Generation runs as a background job and exposes stages such as
+`generating_tags`, `generating_song_prompts`, `suno_queue`, `suno_batch_1`,
+`suno_batch_2`, `importing`, `ready`, and `failed`.
+
+Suno work is stored in the SQLite-backed `daily_suno_batches` queue. The first
+MVP worker drains this queue sequentially so only one browser automation batch
+runs at a time. Each queue item covers up to 5 songs and is visible in
+`GET /v1/daily/jobs/{job_id}`.
+
+Suno batch automation adds a random delay before and after each form fill,
+keyboard press, and click. The default maximum is 500 ms; adjust it with
+`SUNO_BATCH_ACTION_JITTER_MS` or `--jitter-ms`.
+
+Batch runs are resumable by default. Each run writes `batch-state.json` next to
+its screenshots, or the path given by `SUNO_BATCH_STATE` / `--state`. Re-running
+the same batch skips songs already submitted, ready, or downloaded; use
+`SUNO_BATCH_RESET_STATE=1` / `--reset-state` to start over. Daily jobs store one
+state file per queue item, such as `suno-batch-01-state.json` and
+`suno-batch-02-state.json`, inside the job runtime directory.
 
 Build a user taste profile:
 

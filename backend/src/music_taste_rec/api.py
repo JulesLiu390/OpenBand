@@ -17,10 +17,22 @@ from openband.auth import (
     create_me_router,
     current_user_dependency,
 )
+from openband.daily import (
+    DailyGenerationService,
+    DailyGenerator,
+    DailyStore,
+    create_daily_router,
+)
+from openband.prompt_generation import cli as prompt_cli
+from openband.prompt_generation.profile_service import (
+    GeneratedMusicProfile,
+    generate_music_profile,
+)
 from openband.songs import (
     DEFAULT_SONG_STORAGE_ROOT,
     SONG_STORAGE_ROOT_ENV,
     SongStore,
+    create_playlist_router,
     create_song_router,
 )
 from pydantic import BaseModel, Field
@@ -32,6 +44,19 @@ DEFAULT_MODEL_PATH = Path("models/style_model.joblib")
 MODEL_PATH_ENV = "MUSIC_REC_MODEL_PATH"
 AUTH_DB_PATH_ENV = "OPENBAND_AUTH_DB_PATH"
 ADMIN_KEY_ENV = "OPENBAND_ADMIN_KEY"
+PUBLIC_BASE_URL_ENV = "OPENBAND_PUBLIC_BASE_URL"
+PROFILE_RESPONSES_URL_ENV = "RESPONSES_URL"
+PROFILE_RESPONSES_MODEL_ENV = "RESPONSES_MODEL"
+PROFILE_API_KEY_ENV = "OPENAI_API_KEY"
+DEFAULT_RESPONSES_URL = "http://127.0.0.1:8080/v1/responses"
+DEFAULT_RESPONSES_MODEL = "gpt-5.5"
+
+
+def _load_local_prompt_settings() -> None:
+    """Load local prompt/Suno settings for FastAPI without overriding process env."""
+    prompt_cli.load_dotenv(prompt_cli.BACKEND_ROOT / ".env")
+    prompt_cli.load_dotenv(prompt_cli.BACKEND_ROOT.parent / ".env")
+    prompt_cli.load_dotenv(prompt_cli.BACKEND_ROOT.parent / "suno" / ".env")
 
 
 class SongInput(BaseModel):
@@ -60,13 +85,38 @@ class RankRequest(BaseModel):
     top_n: int = Field(default=20, ge=1, le=500)
 
 
+class MusicProfileRequest(BaseModel):
+    favorite_bands: str = Field(default="", max_length=1000)
+    favorite_songs: str = Field(default="", max_length=1000)
+    favorite_anime: str = Field(default="", max_length=1000)
+    favorite_movies: str = Field(default="", max_length=1000)
+    notes: str = Field(default="", max_length=2000)
+    profile_input: str = Field(default="", max_length=4000)
+    save: bool = True
+
+
+class MusicProfileResponse(BaseModel):
+    input_text: str
+    reference_summary: str
+    source_notes: str
+    tags: list[str]
+    raw_tags: list[str]
+    known_tags: list[str]
+    corrected_tags: list[dict[str, str]]
+    unknown_tags: list[str]
+    updated_at: str | None = None
+
+
 def create_app(
     model_path: Path | None = None,
     auth_db_path: Path | None = None,
     song_storage_root: Path | None = None,
     admin_key: str | None = None,
     require_auth: bool = True,
+    daily_generator: DailyGenerator | None = None,
 ) -> FastAPI:
+    _load_local_prompt_settings()
+
     app = FastAPI(
         title="Music Taste Recommendation API",
         version="0.1.0",
@@ -86,15 +136,43 @@ def create_app(
         db_path=configured_auth_db_path,
         storage_root=Path(song_storage_root or os.getenv(SONG_STORAGE_ROOT_ENV, DEFAULT_SONG_STORAGE_ROOT)),
     )
+    app.state.daily_store = DailyStore(configured_auth_db_path)
+    app.state.daily_generator = daily_generator or DailyGenerationService(
+        model_path=app.state.model_path,
+        responses_url=os.getenv(PROFILE_RESPONSES_URL_ENV, DEFAULT_RESPONSES_URL),
+        responses_model=os.getenv(PROFILE_RESPONSES_MODEL_ENV, DEFAULT_RESPONSES_MODEL),
+        api_key_env=PROFILE_API_KEY_ENV,
+    )
     app.state.auth_db_path = app.state.auth_store.db_path
     configured_admin_key = admin_key if admin_key is not None else os.getenv(ADMIN_KEY_ENV)
-    app.include_router(create_auth_router(app.state.auth_store, configured_admin_key))
+    app.include_router(
+        create_auth_router(
+            app.state.auth_store,
+            configured_admin_key,
+            public_base_url=os.getenv(PUBLIC_BASE_URL_ENV),
+        )
+    )
     app.include_router(create_me_router(app.state.auth_store))
     app.include_router(
         create_song_router(
             store=app.state.song_store,
             auth_store=app.state.auth_store,
             admin_key=configured_admin_key,
+            require_auth=require_auth,
+        )
+    )
+    app.include_router(
+        create_playlist_router(
+            store=app.state.song_store,
+            auth_store=app.state.auth_store,
+            require_auth=require_auth,
+        )
+    )
+    app.include_router(
+        create_daily_router(
+            daily_store=app.state.daily_store,
+            song_store=app.state.song_store,
+            auth_store=app.state.auth_store,
             require_auth=require_auth,
         )
     )
@@ -183,6 +261,41 @@ def create_app(
             "unknown_user_tags": model.unknown_tags(request.user_tags),
         }
 
+    @app.post("/v1/me/music-tags/profile", response_model=MusicProfileResponse)
+    def generate_music_tags_profile(
+        request: MusicProfileRequest,
+        user: AuthUser = Depends(current_user),
+        style_model: StyleAssociationModel = Depends(load_model_for_app),
+    ) -> MusicProfileResponse:
+        input_text = _music_profile_input(request)
+        if not input_text:
+            raise HTTPException(status_code=422, detail="At least one favorite field is required.")
+
+        api_key = os.getenv(PROFILE_API_KEY_ENV)
+        if not api_key:
+            raise HTTPException(status_code=503, detail=f"Missing API key. Set {PROFILE_API_KEY_ENV}.")
+
+        try:
+            profile = generate_music_profile(
+                input_text=input_text,
+                api_key=api_key,
+                url=os.getenv(PROFILE_RESPONSES_URL_ENV, DEFAULT_RESPONSES_URL),
+                model=os.getenv(PROFILE_RESPONSES_MODEL_ENV, DEFAULT_RESPONSES_MODEL),
+                allowed_tags=[str(tag) for tag in style_model.tags],
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except SystemExit as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+        updated_at = None
+        tags = profile.tags
+        if request.save:
+            saved = app.state.auth_store.set_music_tags(user.id, tags)
+            updated_at = saved.updated_at
+            tags = saved.tags
+        return _music_profile_response(profile, tags=tags, updated_at=updated_at)
+
     return app
 
 
@@ -209,6 +322,40 @@ def _profile_tags(request: ProfileRequest) -> list[str]:
         if song.genre:
             tags.extend(parse_style_tags(song.genre))
     return list(dict.fromkeys(tags))
+
+
+def _music_profile_input(request: MusicProfileRequest) -> str:
+    if request.profile_input.strip():
+        return request.profile_input.strip()
+
+    pieces = [
+        ("喜欢的乐队或音乐人", request.favorite_bands),
+        ("喜欢的歌曲", request.favorite_songs),
+        ("喜欢的动漫或动画", request.favorite_anime),
+        ("喜欢的电影或影视作品", request.favorite_movies),
+        ("补充偏好", request.notes),
+    ]
+    lines = [f"{label}: {value.strip()}" for label, value in pieces if value.strip()]
+    return "\n".join(lines).strip()
+
+
+def _music_profile_response(
+    profile: GeneratedMusicProfile,
+    *,
+    tags: list[str],
+    updated_at: str | None,
+) -> MusicProfileResponse:
+    return MusicProfileResponse(
+        input_text=profile.input_text,
+        reference_summary=profile.reference_summary,
+        source_notes=profile.source_notes,
+        tags=tags,
+        raw_tags=profile.raw_tags,
+        known_tags=profile.known_tags,
+        corrected_tags=profile.corrected_tags,
+        unknown_tags=profile.unknown_tags,
+        updated_at=updated_at,
+    )
 
 
 def _songs_frame(songs: list[SongInput]) -> pd.DataFrame:

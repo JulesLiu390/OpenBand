@@ -4,6 +4,10 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 
+.env
+.env.*
+!.env.example
+
 data/raw/
 data/processed/
 models/
@@ -11,6 +15,9 @@ models/
 *.zip
 
 # Backend local data/model artifacts
+backend/.env
+backend/.env.*
+!backend/.env.example
 backend/.venv/
 backend/.pytest_cache/
 backend/data/
@@ -30,6 +37,7 @@ backend/src/openband/suno_browser/playwright/*.png
 mobile/node_modules/
 mobile/.expo/
 mobile/mobile/screenshots/
+mobile/*.apk
 
 # Legacy local Suno prompt tool state
 suno/

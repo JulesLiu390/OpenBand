@@ -22,10 +22,24 @@ class SunoBrowserCommand:
     stderr: str
 
     def json_output(self) -> object | None:
+        stdout = self.stdout.strip()
         try:
-            return json.loads(self.stdout)
+            return json.loads(stdout)
         except json.JSONDecodeError:
-            return None
+            pass
+
+        decoder = json.JSONDecoder()
+        for index, character in enumerate(stdout):
+            if character != "{":
+                continue
+            try:
+                value, end = decoder.raw_decode(stdout[index:])
+            except json.JSONDecodeError:
+                continue
+            if stdout[index + end :].strip():
+                continue
+            return value
+        return None
 
 
 def run_suno_browser_command(
@@ -53,4 +67,3 @@ def run_suno_browser_command(
         stdout=completed.stdout,
         stderr=completed.stderr,
     )
-

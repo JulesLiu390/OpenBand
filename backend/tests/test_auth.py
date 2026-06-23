@@ -1,4 +1,6 @@
+import sqlite3
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from fastapi.testclient import TestClient
 
@@ -8,7 +10,8 @@ from music_taste_rec.api import create_app
 ADMIN_KEY = "admin-test-key"
 
 
-def test_invite_login_refresh_and_music_tag_preferences(tmp_path: Path) -> None:
+def test_invite_login_refresh_and_music_tag_preferences(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENBAND_PUBLIC_BASE_URL", "http://testserver")
     client = TestClient(
         create_app(
             model_path=tmp_path / "missing-model.joblib",
@@ -29,9 +32,30 @@ def test_invite_login_refresh_and_music_tag_preferences(tmp_path: Path) -> None:
     invite_body = invite.json()
     assert invite_body["label"] == "Alice"
     assert invite_body["key"].startswith("ob_key_")
-    assert invite_body["key"] in invite_body["qr_payload"]
+    invite_qs = parse_qs(urlparse(invite_body["qr_payload"]).query)
+    assert invite_qs["key"] == [invite_body["key"]]
+    assert invite_qs["base_url"] == ["http://testserver"]
     assert invite_body["qr_svg"].startswith("<?xml")
     assert "<svg" in invite_body["qr_svg"]
+
+    invalid_base_url = client.post(
+        "/v1/auth/invite-keys",
+        headers={"X-Admin-Key": ADMIN_KEY},
+        json={"label": "Bad Base URL", "base_url": "openband://login"},
+    )
+    assert invalid_base_url.status_code == 422
+
+    invite_with_base_url = client.post(
+        "/v1/auth/invite-keys",
+        headers={"X-Admin-Key": ADMIN_KEY},
+        json={
+            "label": "Android Tester",
+            "base_url": "http://192.168.2.151:8000/",
+        },
+    )
+    assert invite_with_base_url.status_code == 200
+    invite_with_base_url_body = invite_with_base_url.json()
+    assert "base_url=http%3A%2F%2F192.168.2.151%3A8000" in invite_with_base_url_body["qr_payload"]
 
     login = client.post(
         "/v1/auth/login",
@@ -43,6 +67,27 @@ def test_invite_login_refresh_and_music_tag_preferences(tmp_path: Path) -> None:
     assert token_body["refresh_token"].startswith("ob_rt_")
     assert token_body["token_type"] == "bearer"
     assert token_body["user"]["label"] == "Alice"
+
+    bound_invite = client.post(
+        "/v1/auth/invite-keys",
+        headers={"X-Admin-Key": ADMIN_KEY},
+        json={"label": "Alice Recovery", "note": "existing-user recovery"},
+    )
+    assert bound_invite.status_code == 200
+    bound_invite_body = bound_invite.json()
+    with sqlite3.connect(tmp_path / "auth.sqlite3") as conn:
+        conn.execute(
+            "UPDATE invite_keys SET claimed_by_user_id = ? WHERE id = ?",
+            (token_body["user"]["id"], bound_invite_body["id"]),
+        )
+    bound_login = client.post(
+        "/v1/auth/login",
+        json={"key": bound_invite_body["key"], "device_name": "Recovered Device"},
+    )
+    assert bound_login.status_code == 200
+    assert bound_login.json()["user"]["id"] == token_body["user"]["id"]
+    with sqlite3.connect(tmp_path / "auth.sqlite3") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1
 
     reused = client.post(
         "/v1/auth/login",

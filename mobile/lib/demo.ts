@@ -68,9 +68,7 @@ export const libraryAlbums = [
 ];
 
 export const libraryShortcuts = [
-  { label: "Songs", value: "128" },
-  { label: "Albums", value: "24" },
-  { label: "Artists", value: "37" },
+  { label: "Tags", value: "0" },
   { label: "Downloaded", value: "18" },
 ];
 
