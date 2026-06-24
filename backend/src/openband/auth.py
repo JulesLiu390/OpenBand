@@ -22,8 +22,8 @@ from music_taste_rec.style_model import canonicalize_tag
 ACCESS_TOKEN_PREFIX = "ob_at_"
 REFRESH_TOKEN_PREFIX = "ob_rt_"
 INVITE_KEY_PREFIX = "ob_key_"
-ACCESS_TOKEN_TTL = timedelta(minutes=15)
-REFRESH_TOKEN_TTL = timedelta(days=30)
+ACCESS_TOKEN_TTL = timedelta(hours=24)
+REFRESH_TOKEN_TTL = timedelta(days=90)
 DEFAULT_AUTH_DB_PATH = Path("runtime/openband.sqlite3")
 
 bearer_scheme = HTTPBearer(auto_error=False)

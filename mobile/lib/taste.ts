@@ -25,6 +25,17 @@ export type MusicProfileResponse = MusicTagsResponse & {
   unknown_tags: string[];
 };
 
+type MusicTagsListener = (response: MusicTagsResponse) => void;
+
+const musicTagsListeners = new Set<MusicTagsListener>();
+
+export function subscribeMusicTags(listener: MusicTagsListener): () => void {
+  musicTagsListeners.add(listener);
+  return () => {
+    musicTagsListeners.delete(listener);
+  };
+}
+
 export async function getMusicTags(accessToken: string): Promise<MusicTagsResponse> {
   const response = await authFetch("/v1/me/music-tags", accessToken);
   await assertOk(response);
@@ -40,7 +51,9 @@ export async function setMusicTags(accessToken: string, tags: string[]): Promise
     method: "PUT",
   });
   await assertOk(response);
-  return (await response.json()) as MusicTagsResponse;
+  const body = (await response.json()) as MusicTagsResponse;
+  notifyMusicTags(body);
+  return body;
 }
 
 export async function generateMusicProfile(
@@ -55,7 +68,17 @@ export async function generateMusicProfile(
     method: "POST",
   });
   await assertOk(response);
-  return (await response.json()) as MusicProfileResponse;
+  const body = (await response.json()) as MusicProfileResponse;
+  if (request.save !== false) {
+    notifyMusicTags(body);
+  }
+  return body;
+}
+
+function notifyMusicTags(response: MusicTagsResponse): void {
+  musicTagsListeners.forEach((listener) => {
+    listener(response);
+  });
 }
 
 async function assertOk(response: Response): Promise<void> {

@@ -1,7 +1,7 @@
 import * as FileSystem from "expo-file-system/legacy";
 import { Platform } from "react-native";
 
-import { ApiError, authFetch, getApiBaseUrl } from "@/lib/auth";
+import { ApiError, authFetch, getApiBaseUrl, getFreshAccessToken } from "@/lib/auth";
 
 const CACHE_DIR = `${FileSystem.documentDirectory ?? ""}openband-songs/`;
 const COVER_CACHE_DIR = `${FileSystem.documentDirectory ?? ""}openband-covers/`;
@@ -103,6 +103,12 @@ export async function listLikedSongs(accessToken: string, limit = 50): Promise<S
   const response = await authFetch(`/v1/songs/liked?limit=${limit}`, accessToken);
   await assertOk(response);
   return (await response.json()) as SongListResponse;
+}
+
+export async function getSong(accessToken: string, songId: string): Promise<Song> {
+  const response = await authFetch(`/v1/songs/${songId}`, accessToken);
+  await assertOk(response);
+  return (await response.json()) as Song;
 }
 
 export async function setSongLiked(accessToken: string, songId: string, liked: boolean): Promise<SongLikeResponse> {
@@ -212,9 +218,10 @@ export async function cacheSong(song: Song, accessToken: string): Promise<SongCa
 
   await ensureCacheDirectory();
   const uri = cacheUriForSong(song);
+  const freshAccessToken = await getFreshAccessToken(accessToken);
   const result = await FileSystem.downloadAsync(absoluteSongUrl(song.download_url), uri, {
     headers: {
-      Authorization: `Bearer ${accessToken}`,
+      Authorization: `Bearer ${freshAccessToken}`,
     },
   });
   if (result.status < 200 || result.status >= 300) {
@@ -286,9 +293,10 @@ export async function cacheSongCover(song: Song, accessToken: string): Promise<S
 
   await ensureCoverCacheDirectory();
   const uri = coverCacheUriForSong(song);
+  const freshAccessToken = await getFreshAccessToken(accessToken);
   const result = await FileSystem.downloadAsync(absoluteSongUrl(song.cover_url), uri, {
     headers: {
-      Authorization: `Bearer ${accessToken}`,
+      Authorization: `Bearer ${freshAccessToken}`,
     },
   });
   if (result.status < 200 || result.status >= 300) {
@@ -309,6 +317,15 @@ export function formatDuration(seconds: number | null | undefined): string {
 
 export function songSubtitle(song: Song): string {
   return song.album ? `${song.artist} · ${song.album}` : song.artist;
+}
+
+export function songTagSummary(song: Song, limit = 3): string {
+  const tags = song.tags.filter(Boolean);
+  const visibleTags = tags.slice(0, limit);
+  if (visibleTags.length === 0) {
+    return "";
+  }
+  return `${visibleTags.join(", ")}${tags.length > limit ? ", ..." : ""}`;
 }
 
 export function readableFileSize(bytes: number): string {

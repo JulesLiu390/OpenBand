@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Image, Platform, StyleSheet } from "react-native";
 
 import { AlbumArt } from "@/components/AlbumArt";
+import { getFreshAccessToken } from "@/lib/auth";
 import { absoluteSongUrl, cacheSongCover, Song } from "@/lib/songs";
 import { artworkPalettes } from "@/lib/theme";
 
@@ -26,12 +27,13 @@ export function SongArtwork({ song, accessToken, colors = artworkPalettes[0], si
       return;
     }
 
+    const currentAccessToken = accessToken;
     const resolvedCoverUrl: string = coverUrl;
     let cancelled = false;
     let objectUrl: string | null = null;
 
     if (Platform.OS !== "web") {
-      cacheSongCover(currentSong, accessToken)
+      cacheSongCover(currentSong, currentAccessToken)
         .then((result) => {
           if (!cancelled && result?.uri) {
             setImageUri(result.uri);
@@ -50,9 +52,10 @@ export function SongArtwork({ song, accessToken, colors = artworkPalettes[0], si
 
     async function loadWebCover() {
       try {
+        const freshAccessToken = await getFreshAccessToken(currentAccessToken);
         const response = await fetch(absoluteSongUrl(resolvedCoverUrl), {
           headers: {
-            Authorization: `Bearer ${accessToken}`,
+            Authorization: `Bearer ${freshAccessToken}`,
           },
         });
         if (!response.ok) {

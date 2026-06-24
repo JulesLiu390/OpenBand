@@ -3,7 +3,7 @@ import { PropsWithChildren, createContext, useCallback, useContext, useEffect, u
 import { Platform } from "react-native";
 
 import { useAuth } from "@/components/AuthProvider";
-import { ApiError } from "@/lib/auth";
+import { ApiError, getFreshAccessToken } from "@/lib/auth";
 import { absoluteSongUrl, cacheSong, Song, SongCacheResult } from "@/lib/songs";
 
 export type PlaybackOrder = "sequence" | "shuffle";
@@ -528,9 +528,10 @@ async function preparePlayableSong(song: Song, accessToken: string): Promise<Son
     return cacheSong(song, accessToken);
   }
 
+  const freshAccessToken = await getFreshAccessToken(accessToken);
   const response = await fetch(absoluteSongUrl(song.download_url), {
     headers: {
-      Authorization: `Bearer ${accessToken}`,
+      Authorization: `Bearer ${freshAccessToken}`,
     },
   });
   if (!response.ok) {

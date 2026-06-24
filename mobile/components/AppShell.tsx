@@ -34,7 +34,7 @@ const styles = StyleSheet.create({
     gap: 16,
     paddingHorizontal: 20,
     paddingBottom: 18,
-    paddingTop: 30,
+    paddingTop: 44,
   },
   section: {
     gap: 10,

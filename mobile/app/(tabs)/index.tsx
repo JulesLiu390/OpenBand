@@ -9,11 +9,9 @@ import { usePlayer } from "@/components/PlayerProvider";
 import { SongActionMenu } from "@/components/SongActionMenu";
 import { SongArtwork } from "@/components/SongArtwork";
 import {
-  DailyPlaylist,
   DailyPlaylistSummary,
   DailyTodayResponse,
   generateTodayDaily,
-  getDailyPlaylist,
   getTodayDaily,
   listDailyHistory,
 } from "@/lib/daily";
@@ -23,8 +21,11 @@ import {
   cacheSong,
   formatDuration,
   getSongCacheStatuses,
+  listAllSongs,
+  loadSongCatalog,
   mergeSongCatalog,
-  songSubtitle,
+  saveSongCatalog,
+  songTagSummary,
 } from "@/lib/songs";
 import { artworkPalettes, theme } from "@/lib/theme";
 
@@ -38,6 +39,29 @@ const WORKING_STATUSES = new Set([
   "importing",
 ]);
 const RESUMABLE_STATUSES = new Set(["failed", "captcha_required"]);
+const MOOD_TAGS = new Set([
+  "atmospheric",
+  "chill",
+  "dark",
+  "energetic",
+  "epic",
+  "melancholic",
+  "melodic",
+  "mellow",
+  "night",
+  "rainy",
+  "sleep",
+  "soft",
+]);
+const VOICE_TAG_PATTERNS = ["vocal", "vocalist", "choir", "male", "female"];
+const INSTRUMENT_TAGS = new Set([
+  "bass",
+  "drums",
+  "guitar",
+  "piano",
+  "synth",
+  "trumpet",
+]);
 
 export default function DailyScreen() {
   const { session } = useAuth();
@@ -52,9 +76,24 @@ export default function DailyScreen() {
   const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [tagsOpen, setTagsOpen] = useState(false);
+  const [catalogSongs, setCatalogSongs] = useState<Song[]>([]);
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
 
   const playlist = today?.playlist ?? null;
   const songs = useMemo(() => playlist?.songs.map((entry) => entry.song) ?? [], [playlist]);
+  const tagSourceSongs = useMemo(() => uniqueSongsById([...catalogSongs, ...songs]), [catalogSongs, songs]);
+  const selectedTagKeys = useMemo(() => new Set(selectedTags.map(tagKey)), [selectedTags]);
+  const tagFilterSongs = useMemo(
+    () => tagSourceSongs.filter((song) => songMatchesSelectedTags(song, selectedTagKeys)),
+    [selectedTagKeys, tagSourceSongs],
+  );
+  const tagCategories = useMemo(() => categorizeSongTags(tagFilterSongs), [tagFilterSongs]);
+  const tagCount = useMemo(
+    () => tagCategories.reduce((total, category) => total + category.tags.length, 0),
+    [tagCategories],
+  );
+  const timeline = useMemo(() => buildDailyTimeline(history, today), [history, today]);
   const activeJob = today?.active_job ?? null;
   const isWorking = Boolean(activeJob && (activeJob.status === "queued" || activeJob.status === "running")) ||
     WORKING_STATUSES.has(today?.status ?? "");
@@ -77,6 +116,7 @@ export default function DailyScreen() {
         setHistory(historyResponse.playlists);
         const nextSongs = todayResponse.playlist?.songs.map((entry) => entry.song) ?? [];
         await mergeSongCatalog(session.user.id, nextSongs);
+        setCatalogSongs((current) => uniqueSongsById([...current, ...nextSongs]));
         await updateCacheStatuses(nextSongs);
       } catch (exc) {
         setError(exc instanceof Error ? exc.message : "Daily could not load.");
@@ -94,14 +134,45 @@ export default function DailyScreen() {
   }, [refreshDaily]);
 
   useEffect(() => {
+    if (!session) {
+      setCatalogSongs([]);
+      return;
+    }
+    const activeSession = session;
+    let mounted = true;
+
+    async function loadExistingSongs() {
+      const cachedSongs = await loadSongCatalog(activeSession.user.id);
+      if (mounted && cachedSongs.length) {
+        setCatalogSongs((current) => uniqueSongsById([...current, ...cachedSongs]));
+      }
+      try {
+        const response = await listAllSongs(activeSession.accessToken);
+        await saveSongCatalog(activeSession.user.id, response.songs);
+        if (mounted) {
+          setCatalogSongs((current) => uniqueSongsById([...current, ...response.songs]));
+        }
+      } catch {
+        // The cached catalog is enough for the tag view when the network is unavailable.
+      }
+    }
+
+    loadExistingSongs();
+
+    return () => {
+      mounted = false;
+    };
+  }, [session]);
+
+  useEffect(() => {
     if (!session || !isWorking) {
       return;
     }
     const timer = setInterval(() => {
-      refreshDaily();
+      refreshDaily({ date: today?.date });
     }, 5000);
     return () => clearInterval(timer);
-  }, [isWorking, refreshDaily, session]);
+  }, [isWorking, refreshDaily, session, today?.date]);
 
   async function updateCacheStatuses(nextSongs: Song[]) {
     setCacheStatus(await getSongCacheStatuses(nextSongs));
@@ -128,8 +199,9 @@ export default function DailyScreen() {
       });
       const nextSongs = response.playlist?.songs.map((entry) => entry.song) ?? [];
       await mergeSongCatalog(session.user.id, nextSongs);
+      setCatalogSongs((current) => uniqueSongsById([...current, ...nextSongs]));
       await updateCacheStatuses(nextSongs);
-      await refreshDaily();
+      await refreshDaily({ date: response.date });
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : "Daily generation could not start.");
     } finally {
@@ -137,32 +209,28 @@ export default function DailyScreen() {
     }
   }
 
-  async function selectHistoryPlaylist(item: DailyPlaylistSummary) {
+  async function selectDailyDate(item: DailyDateItem) {
     if (!session) {
       return;
     }
     setLoading(true);
     setError(null);
     try {
-      const detail: DailyPlaylist = await getDailyPlaylist(session.accessToken, item.date);
-      setToday({
-        date: detail.date,
-        status: detail.status,
-        playlist: detail,
-        active_job: null,
-      });
-      const nextSongs = detail.songs.map((entry) => entry.song);
+      const response = await getTodayDaily(session.accessToken, item.date);
+      setToday(response);
+      const nextSongs = response.playlist?.songs.map((entry) => entry.song) ?? [];
       await mergeSongCatalog(session.user.id, nextSongs);
+      setCatalogSongs((current) => uniqueSongsById([...current, ...nextSongs]));
       await updateCacheStatuses(nextSongs);
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : "Daily playlist could not load.");
+      setError(exc instanceof Error ? exc.message : "Daily date could not load.");
     } finally {
       setLoading(false);
     }
   }
 
   async function selectSong(song: Song) {
-    setSelectedTrack({ title: song.title, subtitle: songSubtitle(song) });
+    setSelectedTrack({ title: song.title, subtitle: songTagSummary(song) });
     if (!session || cacheStatus[song.id] === "downloading") {
       return;
     }
@@ -182,6 +250,23 @@ export default function DailyScreen() {
     }
   }
 
+  async function playDailyAll() {
+    const firstSong = songs[0];
+    if (!firstSong) {
+      return;
+    }
+    await selectSong(firstSong);
+  }
+
+  function toggleTag(tag: string) {
+    const key = tagKey(tag);
+    setSelectedTags((current) =>
+      current.some((item) => tagKey(item) === key)
+        ? current.filter((item) => tagKey(item) !== key)
+        : [...current, tag],
+    );
+  }
+
   async function downloadSong(song: Song) {
     if (!session || cacheStatus[song.id] === "downloading") {
       return;
@@ -190,6 +275,7 @@ export default function DailyScreen() {
     try {
       await cacheSong(song, session.accessToken);
       await mergeSongCatalog(session.user.id, [song]);
+      setCatalogSongs((current) => uniqueSongsById([...current, song]));
       setCacheStatus((current) => ({ ...current, [song.id]: "cached" }));
     } catch (exc) {
       setCacheStatus((current) => ({ ...current, [song.id]: "remote" }));
@@ -242,7 +328,19 @@ export default function DailyScreen() {
             <Text style={styles.heroMeta} numberOfLines={2}>
               {heroMeta}
             </Text>
-            {playlist?.status === "ready" ? null : (
+            {songs.length > 0 ? (
+              <Pressable
+                accessibilityRole="button"
+                disabled={Boolean(busySongId)}
+                onPress={playDailyAll}
+                style={({ pressed }) => [
+                  styles.generateButton,
+                  pressed && styles.pressed,
+                  Boolean(busySongId) && styles.disabled,
+                ]}>
+                <Text style={styles.generateButtonText}>Play All</Text>
+              </Pressable>
+            ) : playlist?.status === "ready" ? null : (
               <Pressable
                 accessibilityRole="button"
                 disabled={generateDisabled}
@@ -275,34 +373,100 @@ export default function DailyScreen() {
           <View style={styles.dailyCard}>
             <Text style={styles.cardLabel}>History</Text>
             <Text style={styles.cardTitle} numberOfLines={1}>
-              {history.length ? `${history.length} days` : "Empty"}
+              {timeline.length ? `${timeline.length} days` : "Empty"}
             </Text>
             <Text style={styles.cardSubtitle} numberOfLines={2}>
               Separate from Play Lists
             </Text>
-            <Text style={styles.cardMeta}>{history[0]?.date ?? "Start today"}</Text>
+            <Text style={styles.cardMeta}>{timeline[0]?.date ?? "Start today"}</Text>
           </View>
+
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => setTagsOpen((open) => !open)}
+            style={({ pressed }) => [styles.dailyCard, tagsOpen && styles.dailyCardActive, pressed && styles.pressed]}>
+            <Text style={styles.cardLabel}>Tags</Text>
+            <Text style={styles.cardTitle} numberOfLines={1}>
+              {tagCount ? `${tagCount} tags` : "Empty"}
+            </Text>
+            <Text style={styles.cardSubtitle} numberOfLines={2}>
+              {selectedTags.length
+                ? `${tagFilterSongs.length} matching songs`
+                : tagCategories.length
+                  ? `${tagCategories.length} categories`
+                  : "No tags yet"}
+            </Text>
+            <Text style={styles.cardMeta}>{tagsOpen ? (selectedTags.length ? `${selectedTags.length} selected` : "Hide") : "Open"}</Text>
+          </Pressable>
         </View>
       </Section>
 
-      {history.length > 0 ? (
+      {tagsOpen ? (
+        <Section>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Tags</Text>
+            {selectedTags.length ? (
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => setSelectedTags([])}
+                style={({ pressed }) => [styles.clearTagButton, pressed && styles.pressed]}>
+                <Text style={styles.clearTagText}>All Tags</Text>
+              </Pressable>
+            ) : null}
+          </View>
+          <View style={styles.tagCategoryList}>
+            {tagCategories.length ? (
+              tagCategories.map((category) => (
+                <View key={category.label} style={styles.tagCategory}>
+                  <View style={styles.tagCategoryHeader}>
+                    <Text style={styles.tagCategoryTitle}>{category.label}</Text>
+                    <Text style={styles.tagCategoryCount}>{category.tags.length}</Text>
+                  </View>
+                  <View style={styles.tagWrap}>
+                    {category.tags.map((item) => {
+                      const active = selectedTagKeys.has(tagKey(item.tag));
+                      return (
+                        <Pressable
+                          accessibilityRole="button"
+                          key={item.tag}
+                          onPress={() => toggleTag(item.tag)}
+                          style={({ pressed }) => [styles.tagPill, active && styles.tagPillActive, pressed && styles.pressed]}>
+                          <Text style={[styles.tagText, active && styles.tagTextActive]}>{item.tag}</Text>
+                          <Text style={styles.tagCount}>{item.count}</Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </View>
+              ))
+            ) : (
+              <View style={styles.emptyPanel}>
+                <Text style={styles.emptyTitle}>No Tags Yet</Text>
+                <Text style={styles.emptyMeta}>Daily songs will add tags here.</Text>
+              </View>
+            )}
+          </View>
+        </Section>
+      ) : null}
+
+      {timeline.length > 0 ? (
         <Section>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>History</Text>
             {loading ? <ActivityIndicator color={theme.colors.tint} size="small" /> : null}
           </View>
           <View style={styles.historyGrid}>
-            {history.slice(0, 6).map((item) => (
+            {timeline.map((item) => (
               <Pressable
-                key={item.id}
-                onPress={() => selectHistoryPlaylist(item)}
+                key={item.date}
+                onPress={() => selectDailyDate(item)}
                 style={({ pressed }) => [
                   styles.historyCard,
-                  playlist?.id === item.id && styles.historyCardActive,
+                  today?.date === item.date && styles.historyCardActive,
                   pressed && styles.pressed,
                 ]}>
                 <Text style={styles.historyDate}>{item.date}</Text>
-                <Text style={styles.historyMeta}>{item.song_count} songs</Text>
+                <Text style={styles.historyMeta}>{dailyDateMeta(item)}</Text>
               </Pressable>
             ))}
           </View>
@@ -311,7 +475,7 @@ export default function DailyScreen() {
 
       <Section>
         <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>Today's Playlist</Text>
+          <Text style={styles.sectionTitle}>Daily Playlist</Text>
           {loading || isWorking ? <ActivityIndicator color={theme.colors.tint} size="small" /> : null}
         </View>
         {error ? <Text style={styles.errorText}>{error}</Text> : null}
@@ -319,6 +483,7 @@ export default function DailyScreen() {
           {songs.length > 0 ? (
             songs.map((song, index) => {
               const displaySong = currentSong?.id === song.id ? currentSong : song;
+              const tagPreview = songTagSummary(displaySong);
               return (
                 <Pressable
                   key={song.id}
@@ -337,9 +502,11 @@ export default function DailyScreen() {
                       </Text>
                       {displaySong.is_liked ? <Text style={styles.likeBadge}>♥</Text> : null}
                     </View>
-                    <Text style={styles.trackMeta} numberOfLines={1}>
-                      {songSubtitle(displaySong)}
-                    </Text>
+                    {tagPreview ? (
+                      <Text style={styles.trackMeta} numberOfLines={1}>
+                        {tagPreview}
+                      </Text>
+                    ) : null}
                   </View>
                   <View style={styles.trailing}>
                     <Text
@@ -453,6 +620,159 @@ function statusLabel(status: string): string {
   }
 }
 
+type TagItem = {
+  tag: string;
+  count: number;
+};
+
+type TagCategory = {
+  label: string;
+  tags: TagItem[];
+};
+
+type DailyDateItem = {
+  date: string;
+  status: string;
+  song_count: number;
+  playlist: DailyPlaylistSummary | null;
+};
+
+function buildDailyTimeline(history: DailyPlaylistSummary[], selected: DailyTodayResponse | null): DailyDateItem[] {
+  const byDate = new Map(history.map((item) => [item.date, item]));
+  const dates = new Set<string>(history.map((item) => item.date));
+  const today = todayIsoDate();
+
+  if (history.length === 0) {
+    dates.add(selected?.date ?? today);
+    dates.add(today);
+  } else {
+    const latestGeneratedDate = history.reduce((latest, item) => (item.date > latest ? item.date : latest), history[0].date);
+    const endDate = maxIsoDate(today, selected?.date ?? today);
+    const cursor = parseIsoDate(endDate);
+    while (formatIsoDate(cursor) >= latestGeneratedDate) {
+      dates.add(formatIsoDate(cursor));
+      cursor.setDate(cursor.getDate() - 1);
+    }
+  }
+
+  return Array.from(dates)
+    .sort((left, right) => right.localeCompare(left))
+    .map((dateValue) => {
+      const selectedForDate = selected?.date === dateValue ? selected : null;
+      const playlist = selectedForDate?.playlist ?? byDate.get(dateValue) ?? null;
+      return {
+        date: dateValue,
+        status: selectedForDate?.status ?? playlist?.status ?? "not_started",
+        song_count: selectedForDate?.playlist?.song_count ?? playlist?.song_count ?? 0,
+        playlist,
+      };
+    });
+}
+
+function dailyDateMeta(item: DailyDateItem): string {
+  if (item.song_count > 0) {
+    return `${item.song_count} songs`;
+  }
+  if (item.status === "not_started") {
+    return "Generate";
+  }
+  return statusLabel(item.status);
+}
+
+function todayIsoDate(): string {
+  return formatIsoDate(new Date());
+}
+
+function maxIsoDate(left: string, right: string): string {
+  return left >= right ? left : right;
+}
+
+function parseIsoDate(value: string): Date {
+  const [year, month, day] = value.split("-").map((part) => Number.parseInt(part, 10));
+  return new Date(year, month - 1, day);
+}
+
+function formatIsoDate(value: Date): string {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function categorizeSongTags(songs: Song[]): TagCategory[] {
+  const counts = new Map<string, TagItem>();
+  for (const song of songs) {
+    const seen = new Set<string>();
+    for (const rawTag of song.tags) {
+      const tag = rawTag.trim();
+      const key = tagKey(tag);
+      if (!key || key.startsWith("no ") || seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      const existing = counts.get(key);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        counts.set(key, { tag, count: 1 });
+      }
+    }
+  }
+
+  const categories = new Map<string, TagItem[]>();
+  for (const { tag, count } of counts.values()) {
+    const label = tagCategoryLabel(tag);
+    const list = categories.get(label) ?? [];
+    list.push({ tag, count });
+    categories.set(label, list);
+  }
+
+  const order = ["Styles", "Mood", "Voices", "Instruments", "Other"];
+  return order
+    .map((label) => ({
+      label,
+      tags: (categories.get(label) ?? []).sort((left, right) => right.count - left.count || left.tag.localeCompare(right.tag)),
+    }))
+    .filter((category) => category.tags.length > 0);
+}
+
+function songMatchesSelectedTags(song: Song, selectedTagKeys: Set<string>): boolean {
+  if (selectedTagKeys.size === 0) {
+    return true;
+  }
+  const songTagKeys = new Set(song.tags.map(tagKey));
+  return Array.from(selectedTagKeys).every((key) => songTagKeys.has(key));
+}
+
+function uniqueSongsById(songs: Song[]): Song[] {
+  const byId = new Map<string, Song>();
+  for (const song of songs) {
+    byId.set(song.id, song);
+  }
+  return Array.from(byId.values());
+}
+
+function tagKey(tag: string): string {
+  return tag.trim().toLowerCase();
+}
+
+function tagCategoryLabel(tag: string): string {
+  const normalized = tag.toLowerCase();
+  if (VOICE_TAG_PATTERNS.some((pattern) => normalized.includes(pattern))) {
+    return "Voices";
+  }
+  if (INSTRUMENT_TAGS.has(normalized) || Array.from(INSTRUMENT_TAGS).some((instrument) => normalized.includes(instrument))) {
+    return "Instruments";
+  }
+  if (MOOD_TAGS.has(normalized)) {
+    return "Mood";
+  }
+  if (normalized.startsWith("no ")) {
+    return "Other";
+  }
+  return "Styles";
+}
+
 const styles = StyleSheet.create({
   eyebrow: {
     color: theme.colors.tint,
@@ -512,15 +832,24 @@ const styles = StyleSheet.create({
   },
   cardGrid: {
     flexDirection: "row",
+    flexWrap: "wrap",
     gap: 10,
   },
   dailyCard: {
     backgroundColor: theme.colors.surface,
+    borderColor: "transparent",
     borderRadius: theme.radius.md,
+    borderWidth: 1,
+    flexBasis: "31%",
     flex: 1,
     gap: 6,
+    minWidth: 108,
     minHeight: 142,
     padding: 12,
+  },
+  dailyCardActive: {
+    backgroundColor: theme.colors.tintSoft,
+    borderColor: theme.colors.tint,
   },
   cardLabel: {
     color: theme.colors.tint,
@@ -581,6 +910,78 @@ const styles = StyleSheet.create({
     color: theme.colors.secondaryText,
     fontSize: 12,
     marginTop: 3,
+  },
+  tagCategoryList: {
+    gap: 10,
+  },
+  tagCategory: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.md,
+    gap: 10,
+    padding: 12,
+  },
+  tagCategoryHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+  },
+  tagCategoryTitle: {
+    color: theme.colors.text,
+    fontSize: 15,
+    fontWeight: "900",
+  },
+  tagCategoryCount: {
+    color: theme.colors.tint,
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  clearTagButton: {
+    alignItems: "center",
+    backgroundColor: theme.colors.tintSoft,
+    borderColor: theme.colors.tint,
+    borderRadius: theme.radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
+    minHeight: 30,
+    justifyContent: "center",
+    paddingHorizontal: 11,
+  },
+  clearTagText: {
+    color: theme.colors.tint,
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  tagWrap: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  tagPill: {
+    alignItems: "center",
+    backgroundColor: theme.colors.elevated,
+    borderColor: theme.colors.hairline,
+    borderRadius: theme.radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: "row",
+    gap: 6,
+    minHeight: 32,
+    paddingHorizontal: 10,
+  },
+  tagPillActive: {
+    backgroundColor: theme.colors.tint,
+    borderColor: theme.colors.tint,
+  },
+  tagText: {
+    color: theme.colors.text,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  tagTextActive: {
+    color: "#FFFFFF",
+  },
+  tagCount: {
+    color: theme.colors.tint,
+    fontSize: 11,
+    fontWeight: "900",
   },
   list: {
     gap: 8,

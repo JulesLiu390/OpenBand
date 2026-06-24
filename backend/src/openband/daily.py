@@ -11,9 +11,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Protocol
 
+import numpy as np
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from music_taste_rec.style_model import StyleAssociationModel
 from music_taste_rec.style_model import parse_style_tags
 from openband.auth import AuthStore, AuthUser, current_user_dependency
 from openband.prompt_generation import cli as prompt_cli
@@ -29,6 +31,8 @@ DAILY_SUNO_TIMEOUT_ENV = "OPENBAND_DAILY_SUNO_TIMEOUT_SECONDS"
 SUNO_CAPTCHA_ERROR_CODE = "SUNO_CAPTCHA_REQUIRED"
 SUNO_BROWSER_ERROR_CODE = "SUNO_BROWSER_ERROR"
 SUNO_CAPTCHA_STATUS = "captcha_required"
+STYLE_PROMPT_TAG_MIN_SIMILARITY = 0.58
+STYLE_PROMPT_TAG_SIMILARITY_MARGIN = 0.08
 
 
 def _redact_sensitive_error(value: str) -> str:
@@ -862,6 +866,8 @@ class DailyGenerationService:
             suno_timeout_seconds
             or os.getenv(DAILY_SUNO_TIMEOUT_ENV, "1800")
         )
+        self._style_tag_model: StyleAssociationModel | None = None
+        self._style_tag_model_loaded = False
 
     def run(self, context: DailyGenerationContext) -> None:
         job_dir = self.runtime_root / str(context.user.id) / context.date / context.job_id
@@ -1004,16 +1010,16 @@ class DailyGenerationService:
         manifest = []
         for song_seed in seed.get("songs", []):
             index = int(song_seed["index"])
-            tags = [str(tag) for tag in song_seed.get("tags", [])]
+            seed_tags = [str(tag) for tag in song_seed.get("tags", [])]
             args.song_index = index
             args.message = f"Generate prompt and lyrics for Daily {date_value}, song {index}."
             candidates, selected_index, selected = prompt_cli.run_brief_candidates(
                 args,
                 api_key,
-                tags,
+                seed_tags,
             )
             user_text = prompt_cli.apply_profile(
-                prompt_cli.selected_brief_user_text(args, tags, selected),
+                prompt_cli.selected_brief_user_text(args, seed_tags, selected),
                 profile,
             )
             _flow_output, flow_result = prompt_cli.run_generation_flow(
@@ -1022,7 +1028,7 @@ class DailyGenerationService:
                 user_text,
             )
             content = prompt_cli.format_song_brief_result(
-                tags=tags,
+                tags=seed_tags,
                 candidates=candidates,
                 selected_index=selected_index,
                 selected=selected,
@@ -1031,10 +1037,13 @@ class DailyGenerationService:
             title = str(selected.get("title_seed") or f"Daily Song {index}")
             prompt_file = prompt_dir / f"{index:02d}-{prompt_cli.safe_slug(title)}.md"
             prompt_file.write_text(content, encoding="utf-8")
+            style_prompt = _markdown_section(flow_result, "Style Prompt")
+            tags = self._style_prompt_tags(style_prompt)
             manifest.append(
                 {
                     "index": index,
                     "tags": tags,
+                    "style_prompt": style_prompt,
                     "prompt_file": prompt_file,
                     "selected_brief_index": selected_index + 1,
                     "selected_brief": selected,
@@ -1266,10 +1275,12 @@ class DailyGenerationService:
         index = int(index_match.group(1)) if index_match else fallback_index
         selected_brief_index = None
         tags: list[str] = []
+        style_prompt = ""
         selected_brief: dict[str, Any] = {}
         if prompt_file.exists():
             content = prompt_file.read_text(encoding="utf-8")
-            tags = _clean_tags(_markdown_section(content, "Song Tags"))
+            style_prompt = _markdown_section(content, "Style Prompt")
+            tags = self._style_prompt_tags(style_prompt)
             selected_brief = _json_code_block(_markdown_section(content, "Selected Brief"))
             selected_match = re.search(r"^- Selected:\s*(\d+)\s*$", content, flags=re.MULTILINE)
             if selected_match:
@@ -1277,6 +1288,7 @@ class DailyGenerationService:
         return {
             "index": index,
             "tags": tags,
+            "style_prompt": style_prompt,
             "prompt_file": prompt_file,
             "selected_brief_index": selected_brief_index,
             "selected_brief": selected_brief,
@@ -1345,6 +1357,7 @@ class DailyGenerationService:
                     "metadata": {
                         "selected_brief_index": meta.get("selected_brief_index"),
                         "selected_brief": meta.get("selected_brief", {}),
+                        "style_prompt_tags": meta.get("tags", []),
                         "song_metrics": meta.get("song_metrics", {}),
                         "selected_duration": result.get("selectedDuration"),
                         "suggested_filename": result.get("suggestedFilename"),
@@ -1416,6 +1429,257 @@ class DailyGenerationService:
         if not raw_value:
             return ""
         return str(Path(raw_value).expanduser().resolve())
+
+    def _style_prompt_tags(self, style_prompt: str) -> list[str]:
+        model = self._load_style_tag_model()
+        if model is None:
+            return []
+        return style_prompt_tags_from_text(model, style_prompt)
+
+    def _load_style_tag_model(self) -> StyleAssociationModel | None:
+        if self._style_tag_model_loaded:
+            return self._style_tag_model
+        self._style_tag_model_loaded = True
+        if not self.model_path.exists():
+            return None
+        self._style_tag_model = StyleAssociationModel.load(self.model_path)
+        return self._style_tag_model
+
+
+def style_prompt_tags_from_text(
+    model: StyleAssociationModel,
+    style_prompt: str,
+    *,
+    min_similarity: float = STYLE_PROMPT_TAG_MIN_SIMILARITY,
+    similarity_margin: float = STYLE_PROMPT_TAG_SIMILARITY_MARGIN,
+) -> list[str]:
+    """Map positive Suno style-prompt language onto known model tags."""
+    fragments = _positive_style_prompt_fragments(style_prompt)
+    if not fragments:
+        return []
+
+    normalized_tags = [(tag, _style_text(tag)) for tag in model.tags]
+    blocked_tags = set(
+        _negative_style_prompt_tags(
+            model=model,
+            style_prompt=style_prompt,
+            normalized_tags=normalized_tags,
+        )
+    )
+    tag_scores: dict[str, float] = {}
+    first_seen: dict[str, int] = {}
+
+    for position, fragment in enumerate(fragments):
+        fragment_tags = _known_tags_in_style_fragment(
+            model=model,
+            fragment=fragment,
+            normalized_tags=normalized_tags,
+        )
+        if not fragment_tags:
+            continue
+
+        for tag in fragment_tags:
+            if tag in blocked_tags:
+                continue
+            _record_style_tag(
+                tag_scores=tag_scores,
+                first_seen=first_seen,
+                tag=tag,
+                score=1.0,
+                position=position,
+            )
+
+        vector = model.embed_tags(fragment_tags)
+        if not np.any(vector):
+            continue
+        scores = model.tag_embeddings @ vector
+        max_score = float(np.max(scores)) if len(scores) else 0.0
+        cutoff = max(float(min_similarity), max_score - float(similarity_margin))
+        for index in np.where(scores >= cutoff)[0]:
+            tag = model.tags[int(index)]
+            if tag in blocked_tags:
+                continue
+            _record_style_tag(
+                tag_scores=tag_scores,
+                first_seen=first_seen,
+                tag=tag,
+                score=float(scores[int(index)]),
+                position=position,
+            )
+
+    return sorted(
+        tag_scores,
+        key=lambda tag: (-tag_scores[tag], first_seen[tag], tag),
+    )
+
+
+def _record_style_tag(
+    *,
+    tag_scores: dict[str, float],
+    first_seen: dict[str, int],
+    tag: str,
+    score: float,
+    position: int,
+) -> None:
+    if score > tag_scores.get(tag, -1.0):
+        tag_scores[tag] = score
+    first_seen.setdefault(tag, position)
+
+
+def _positive_style_prompt_fragments(style_prompt: str) -> list[str]:
+    fragments: list[str] = []
+    for raw_fragment in re.split(r"[,.;\n]+", style_prompt):
+        fragment = _style_text(raw_fragment)
+        if not fragment:
+            continue
+        if _negative_style_fragment(fragment):
+            continue
+        fragment = _trim_negative_style_tail(fragment)
+        if fragment:
+            fragments.append(fragment)
+    return fragments
+
+
+def _negative_style_prompt_tags(
+    *,
+    model: StyleAssociationModel,
+    style_prompt: str,
+    normalized_tags: list[tuple[str, str]],
+) -> list[str]:
+    tags: list[str] = []
+    for fragment in _negative_style_prompt_fragments(style_prompt):
+        tags.extend(
+            _known_tags_in_style_fragment(
+                model=model,
+                fragment=fragment,
+                normalized_tags=normalized_tags,
+            )
+        )
+    return list(dict.fromkeys(tags))
+
+
+def _negative_style_prompt_fragments(style_prompt: str) -> list[str]:
+    fragments: list[str] = []
+    for raw_fragment in re.split(r"[,.;\n]+", style_prompt):
+        fragment = _style_text(raw_fragment)
+        if not fragment:
+            continue
+        if _negative_style_fragment(fragment):
+            fragments.append(_strip_negative_style_prefix(fragment))
+            continue
+        tail = _negative_style_tail(fragment)
+        if tail:
+            fragments.append(tail)
+    return [fragment for fragment in fragments if fragment]
+
+
+def _negative_style_fragment(fragment: str) -> bool:
+    return (
+        fragment.startswith("no ")
+        or fragment.startswith("without ")
+        or fragment.startswith("avoid ")
+        or fragment.startswith("exclude ")
+        or fragment.startswith("negative ")
+    )
+
+
+def _strip_negative_style_prefix(fragment: str) -> str:
+    for prefix in ("negative constraints no ", "negative no ", "no ", "without ", "avoid ", "exclude "):
+        if fragment.startswith(prefix):
+            return fragment[len(prefix) :].strip()
+    return fragment
+
+
+def _trim_negative_style_tail(fragment: str) -> str:
+    padded = f" {fragment} "
+    indexes = [
+        padded.find(marker)
+        for marker in (" no ", " without ", " avoid ", " exclude ")
+        if padded.find(marker) >= 0
+    ]
+    if not indexes:
+        return fragment
+    return padded[: min(indexes)].strip()
+
+
+def _negative_style_tail(fragment: str) -> str:
+    padded = f" {fragment} "
+    matches = [
+        (padded.find(marker), marker)
+        for marker in (" no ", " without ", " avoid ", " exclude ")
+        if padded.find(marker) >= 0
+    ]
+    if not matches:
+        return ""
+    index, marker = min(matches, key=lambda item: item[0])
+    return padded[index + len(marker) :].strip()
+
+
+def _known_tags_in_style_fragment(
+    *,
+    model: StyleAssociationModel,
+    fragment: str,
+    normalized_tags: list[tuple[str, str]],
+) -> list[str]:
+    found: list[str] = []
+    for tag, normalized_tag in normalized_tags:
+        if not normalized_tag:
+            continue
+        if re.search(rf"(?<![a-z0-9]){re.escape(normalized_tag)}(?![a-z0-9])", fragment):
+            found.append(tag)
+
+    for alias_tag, patterns in _style_prompt_aliases().items():
+        if alias_tag not in model.tag_to_index:
+            continue
+        if any(re.search(pattern, fragment) for pattern in patterns):
+            found.append(alias_tag)
+
+    return list(dict.fromkeys(found))
+
+
+def _style_prompt_aliases() -> dict[str, tuple[str, ...]]:
+    return {
+        "male vocalists": (
+            r"\bmale fronted\b",
+            r"\bmale lead\b",
+            r"\bmale vocal\b",
+            r"\bbaritone\b",
+        ),
+        "female vocalists": (
+            r"\bfemale fronted\b",
+            r"\bfemale lead\b",
+            r"\bfemale vocal\b",
+            r"\bsoprano\b",
+        ),
+        "instrumental": (
+            r"\binstrumental\b",
+            r"\bwordless\b",
+        ),
+        "soundtrack": (
+            r"\bcinematic\b",
+            r"\bscore\b",
+        ),
+        "japanese": (
+            r"\bj pop\b",
+            r"\bjpop\b",
+        ),
+        "electronic": (
+            r"\belectronic\b",
+            r"\bdigital\b",
+        ),
+        "synth": (
+            r"\bsynth\b",
+            r"\bsynths\b",
+            r"\bsynthesizer\b",
+        ),
+    }
+
+
+def _style_text(value: object) -> str:
+    text = str(value).strip().lower()
+    text = re.sub(r"[_-]+", " ", text)
+    text = re.sub(r"[^a-z0-9\s]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def create_daily_router(

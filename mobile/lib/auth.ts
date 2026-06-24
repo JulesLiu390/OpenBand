@@ -3,6 +3,7 @@ import { Platform } from "react-native";
 
 const SESSION_STORAGE_KEY = "openband.auth.session";
 const API_BASE_STORAGE_KEY = "openband.api.base_url";
+const ACCESS_REFRESH_SKEW_MS = 5 * 60 * 1000;
 
 export const DEFAULT_API_BASE_URL = (
   process.env.EXPO_PUBLIC_API_URL || "http://127.0.0.1:8000"
@@ -10,6 +11,9 @@ export const DEFAULT_API_BASE_URL = (
 export const API_BASE_URL = DEFAULT_API_BASE_URL;
 
 let activeApiBaseUrl = DEFAULT_API_BASE_URL;
+let refreshInFlight: Promise<AuthSession> | null = null;
+
+const sessionListeners = new Set<(session: AuthSession | null) => void>();
 
 export type AuthUser = {
   id: number;
@@ -47,6 +51,13 @@ export class ApiError extends Error {
   ) {
     super(message);
   }
+}
+
+export function subscribeAuthSession(listener: (session: AuthSession | null) => void): () => void {
+  sessionListeners.add(listener);
+  return () => {
+    sessionListeners.delete(listener);
+  };
 }
 
 export async function loginWithInviteKey(
@@ -87,30 +98,73 @@ export async function getMe(accessToken: string): Promise<AuthUser> {
 }
 
 export async function logoutSession(accessToken: string, refreshToken: string): Promise<void> {
-  const response = await authFetch("/v1/me/logout", accessToken, {
+  let currentAccessToken = accessToken;
+  let currentRefreshToken = refreshToken;
+  try {
+    const storedSession = await loadStoredSession();
+    if (storedSession?.refreshToken === refreshToken) {
+      const freshSession = await ensureFreshSession({
+        force: !isAccessTokenFresh(storedSession),
+        storedSession,
+      });
+      currentAccessToken = freshSession.accessToken;
+      currentRefreshToken = freshSession.refreshToken;
+    }
+  } catch {
+    // Logout should still try to revoke the token pair the caller knows about.
+  }
+
+  const response = await fetch(apiUrl("/v1/me/logout"), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      Authorization: `Bearer ${currentAccessToken}`,
     },
-    body: JSON.stringify({ refresh_token: refreshToken }),
+    body: JSON.stringify({ refresh_token: currentRefreshToken }),
   });
   await assertOk(response);
 }
 
-export function authFetch(path: string, accessToken: string, init: RequestInit = {}): Promise<Response> {
-  return fetch(apiUrl(path), {
-    ...init,
-    headers: {
-      ...(init.headers as Record<string, string> | undefined),
-      Authorization: `Bearer ${accessToken}`,
-    },
-  });
+export async function authFetch(path: string, accessToken: string, init: RequestInit = {}): Promise<Response> {
+  const freshAccessToken = await getFreshAccessToken(accessToken);
+  const response = await fetchWithAccessToken(path, freshAccessToken, init);
+  if (response.status !== 401) {
+    return response;
+  }
+
+  try {
+    const refreshedSession = await ensureFreshSession({ force: true });
+    return fetchWithAccessToken(path, refreshedSession.accessToken, init);
+  } catch {
+    return response;
+  }
+}
+
+export async function getFreshAccessToken(fallbackAccessToken?: string): Promise<string> {
+  const storedSession = await loadStoredSession();
+  if (!storedSession) {
+    if (fallbackAccessToken) {
+      return fallbackAccessToken;
+    }
+    throw new ApiError("Missing auth session.", 401);
+  }
+
+  try {
+    const session = await ensureFreshSession({ storedSession });
+    return session.accessToken;
+  } catch (exc) {
+    if (fallbackAccessToken && !(exc instanceof ApiError && (exc.status === 401 || exc.status === 403))) {
+      return fallbackAccessToken;
+    }
+    throw exc;
+  }
 }
 
 export async function saveStoredSession(session: AuthSession): Promise<void> {
   const sessionWithBaseUrl = { ...session, apiBaseUrl: normalizeApiBaseUrl(session.apiBaseUrl) };
   await saveApiBaseUrl(sessionWithBaseUrl.apiBaseUrl);
   await setStorageItem(SESSION_STORAGE_KEY, JSON.stringify(sessionWithBaseUrl));
+  notifyAuthSessionChanged(sessionWithBaseUrl);
 }
 
 export async function loadStoredSession(): Promise<AuthSession | null> {
@@ -132,6 +186,7 @@ export async function loadStoredSession(): Promise<AuthSession | null> {
 
 export async function clearStoredSession(): Promise<void> {
   await deleteStorageItem(SESSION_STORAGE_KEY);
+  notifyAuthSessionChanged(null);
 }
 
 export function getApiBaseUrl(): string {
@@ -172,7 +227,48 @@ export function normalizeApiBaseUrl(value: string): string {
 }
 
 export function isAccessTokenFresh(session: AuthSession): boolean {
-  return session.accessExpiresAt - 30_000 > Date.now();
+  return session.accessExpiresAt - ACCESS_REFRESH_SKEW_MS > Date.now();
+}
+
+function isRefreshTokenFresh(session: AuthSession): boolean {
+  return session.refreshExpiresAt - ACCESS_REFRESH_SKEW_MS > Date.now();
+}
+
+async function ensureFreshSession(
+  options: { force?: boolean; storedSession?: AuthSession } = {},
+): Promise<AuthSession> {
+  const storedSession = options.storedSession ?? (await loadStoredSession());
+  if (!storedSession) {
+    throw new ApiError("Missing auth session.", 401);
+  }
+
+  if (!options.force && isAccessTokenFresh(storedSession)) {
+    return storedSession;
+  }
+
+  if (!isRefreshTokenFresh(storedSession)) {
+    await clearStoredSession();
+    throw new ApiError("Refresh token has expired.", 401);
+  }
+
+  if (!refreshInFlight) {
+    refreshInFlight = refreshAuthSession(storedSession.refreshToken)
+      .then(async (session) => {
+        await saveStoredSession(session);
+        return session;
+      })
+      .catch(async (exc) => {
+        if (exc instanceof ApiError && (exc.status === 401 || exc.status === 403)) {
+          await clearStoredSession();
+        }
+        throw exc;
+      })
+      .finally(() => {
+        refreshInFlight = null;
+      });
+  }
+
+  return refreshInFlight;
 }
 
 function tokenResponseToSession(response: TokenResponse, apiBaseUrl = getApiBaseUrl()): AuthSession {
@@ -190,6 +286,21 @@ function tokenResponseToSession(response: TokenResponse, apiBaseUrl = getApiBase
 
 function apiUrl(path: string, apiBaseUrl = getApiBaseUrl()): string {
   return `${apiBaseUrl}${path}`;
+}
+
+function fetchWithAccessToken(path: string, accessToken: string, init: RequestInit): Promise<Response> {
+  const headers = new Headers(init.headers);
+  headers.set("Authorization", `Bearer ${accessToken}`);
+  return fetch(apiUrl(path), {
+    ...init,
+    headers,
+  });
+}
+
+function notifyAuthSessionChanged(session: AuthSession | null): void {
+  for (const listener of sessionListeners) {
+    listener(session);
+  }
 }
 
 async function assertOk(response: Response): Promise<void> {

@@ -1,7 +1,7 @@
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { SongArtwork } from "@/components/SongArtwork";
-import { Song } from "@/lib/songs";
+import { Song, songTagSummary } from "@/lib/songs";
 import { artworkPalettes, theme } from "@/lib/theme";
 
 type Props = {
@@ -27,6 +27,8 @@ export function PlayerBar({
   onPress,
   onTogglePlay,
 }: Props) {
+  const displaySubtitle = song ? songTagSummary(song) : subtitle;
+
   return (
     <View style={styles.bar}>
       <Pressable
@@ -40,9 +42,11 @@ export function PlayerBar({
           <Text style={styles.title} numberOfLines={1}>
             {song?.title ?? title}
           </Text>
-          <Text style={styles.subtitle} numberOfLines={1}>
-            {song ? (song.album ? `${song.artist} · ${song.album}` : song.artist) : subtitle}
-          </Text>
+          {displaySubtitle ? (
+            <Text style={styles.subtitle} numberOfLines={1}>
+              {displaySubtitle}
+            </Text>
+          ) : null}
         </View>
       </Pressable>
       <Pressable

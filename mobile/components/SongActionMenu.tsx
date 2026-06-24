@@ -3,7 +3,7 @@ import { ActivityIndicator, Modal, Pressable, StyleSheet, Text, View } from "rea
 
 import { usePlayer } from "@/components/PlayerProvider";
 import { addPlaylistSong, listPlaylists, removePlaylistSong, PlaylistSummary } from "@/lib/playlists";
-import { setSongLiked, Song } from "@/lib/songs";
+import { setSongLiked, Song, songTagSummary } from "@/lib/songs";
 import { theme } from "@/lib/theme";
 
 type SongActionMenuProps = {
@@ -34,6 +34,7 @@ export function SongActionMenu({
   onRemovedFromPlaylist,
 }: SongActionMenuProps) {
   const { playNext } = usePlayer();
+  const tagPreview = songTagSummary(song);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<"actions" | "playlists">("actions");
@@ -165,9 +166,11 @@ export function SongActionMenu({
             <Text style={styles.sheetTitle} numberOfLines={1}>
               {song.title}
             </Text>
-            <Text style={styles.sheetMeta} numberOfLines={1}>
-              {song.artist}
-            </Text>
+            {tagPreview ? (
+              <Text style={styles.sheetMeta} numberOfLines={1}>
+                {tagPreview}
+              </Text>
+            ) : null}
 
             {error ? <Text style={styles.errorText}>{error}</Text> : null}
 

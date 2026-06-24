@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#ef3b45"/>
+    </marker>
+    <style>
+      .bg { fill: #f7f7f9; }
+      .card { fill: #ffffff; stroke: #dedee6; stroke-width: 2; rx: 18; }
+      .title { font: 700 34px Arial, sans-serif; fill: #11131a; }
+      .label { font: 700 22px Arial, sans-serif; fill: #11131a; }
+      .small { font: 400 18px Arial, sans-serif; fill: #5f6270; }
+      .tiny { font: 400 15px Arial, sans-serif; fill: #737684; }
+      .line { stroke: #ef3b45; stroke-width: 5; fill: none; marker-end: url(#arrow); }
+      .accent { fill: #ef3b45; }
+      .dot1 { fill: #ef3b45; }
+      .dot2 { fill: #3a7bd5; }
+      .dot3 { fill: #32a852; }
+    </style>
+  </defs>
+  <rect class="bg" width="1200" height="700"/>
+  <text class="title" x="54" y="68">2. Model training</text>
+  <text class="small" x="56" y="102">The model turns play history into a map of style tags.</text>
+
+  <rect class="card" x="55" y="185" width="235" height="150"/>
+  <text class="label" x="92" y="238">User-track</text>
+  <text class="small" x="92" y="272">what each user</text>
+  <text class="small" x="92" y="302">played often</text>
+
+  <text class="label" x="325" y="275">x</text>
+
+  <rect class="card" x="370" y="185" width="235" height="150"/>
+  <text class="label" x="407" y="238">Track-tag</text>
+  <text class="small" x="407" y="272">which tags each</text>
+  <text class="small" x="407" y="302">track has</text>
+
+  <line class="line" x1="620" y1="260" x2="720" y2="260"/>
+
+  <rect class="card" x="745" y="185" width="235" height="150"/>
+  <text class="label" x="788" y="238">User-tag</text>
+  <text class="small" x="788" y="272">what tags each</text>
+  <text class="small" x="788" y="302">user seems to like</text>
+
+  <line class="line" x1="865" y1="345" x2="865" y2="420"/>
+
+  <rect class="card" x="650" y="435" width="430" height="160"/>
+  <text class="label" x="735" y="486">TF-IDF then SVD</text>
+  <text class="small" x="713" y="522">rare useful tags get more weight</text>
+  <text class="small" x="713" y="552">SVD makes compact tag vectors</text>
+
+  <line class="line" x1="640" y1="515" x2="505" y2="515"/>
+
+  <rect class="card" x="100" y="420" width="380" height="190"/>
+  <text class="label" x="185" y="468">Tag embedding map</text>
+  <circle class="dot1" cx="165" cy="525" r="10"/>
+  <circle class="dot1" cx="205" cy="548" r="10"/>
+  <circle class="dot1" cx="235" cy="515" r="10"/>
+  <text class="tiny" x="260" y="532">rock cluster</text>
+  <circle class="dot2" cx="160" cy="580" r="10"/>
+  <circle class="dot2" cx="203" cy="590" r="10"/>
+  <text class="tiny" x="260" y="592">jazz cluster</text>
+  <circle class="dot3" cx="350" cy="535" r="10"/>
+  <circle class="dot3" cx="385" cy="565" r="10"/>
+  <text class="tiny" x="260" y="565">electronic cluster</text>
+</svg>

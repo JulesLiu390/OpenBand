@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#ef3b45"/>
+    </marker>
+    <style>
+      .bg { fill: #f7f7f9; }
+      .card { fill: #fff; stroke: #dedee6; stroke-width: 2; rx: 18; }
+      .title { font: 700 34px Arial, sans-serif; fill: #11131a; }
+      .label { font: 700 22px Arial, sans-serif; fill: #11131a; }
+      .small { font: 400 18px Arial, sans-serif; fill: #5f6270; }
+      .tiny { font: 400 15px Arial, sans-serif; fill: #737684; }
+      .line { stroke: #ef3b45; stroke-width: 5; fill: none; marker-end: url(#arrow); }
+      .screen { fill: #17181d; stroke: #30323a; stroke-width: 2; rx: 18; }
+      .green { fill: #31a66a; }
+      .red { fill: #ef3b45; }
+    </style>
+  </defs>
+  <rect class="bg" width="1200" height="700"/>
+  <text class="title" x="54" y="68">5. Suno browser automation</text>
+  <text class="small" x="56" y="102">The browser script creates the songs and downloads one version for each prompt.</text>
+
+  <rect class="card" x="50" y="185" width="195" height="145"/>
+  <text class="label" x="88" y="238">Prompt md</text>
+  <text class="small" x="90" y="270">title, style,</text>
+  <text class="small" x="105" y="300">lyrics</text>
+
+  <line class="line" x1="255" y1="258" x2="340" y2="258"/>
+
+  <rect class="screen" x="365" y="160" width="250" height="195"/>
+  <text class="label" x="440" y="215" fill="#fff">Suno form</text>
+  <rect x="405" y="245" width="170" height="25" fill="#2b2d35" rx="8"/>
+  <rect x="405" y="285" width="170" height="25" fill="#2b2d35" rx="8"/>
+  <circle class="red" cx="565" cy="325" r="18"/>
+  <text class="tiny" x="408" y="333" fill="#c6c7cf">click Create</text>
+
+  <line class="line" x1="625" y1="258" x2="710" y2="258"/>
+
+  <rect class="card" x="735" y="185" width="190" height="145"/>
+  <text class="label" x="779" y="236">Captcha?</text>
+  <text class="small" x="776" y="270">solve if it</text>
+  <text class="small" x="797" y="300">appears</text>
+
+  <line class="line" x1="935" y1="258" x2="1020" y2="258"/>
+
+  <rect class="card" x="1035" y="185" width="130" height="145"/>
+  <text class="label" x="1072" y="238">Wait</text>
+  <text class="small" x="1061" y="270">2 versions</text>
+  <text class="small" x="1070" y="300">ready</text>
+
+  <line class="line" x1="1100" y1="340" x2="1100" y2="415"/>
+
+  <rect class="card" x="840" y="435" width="260" height="145"/>
+  <text class="label" x="895" y="490">Top-down scan</text>
+  <text class="small" x="888" y="522">find the safe row</text>
+  <text class="small" x="905" y="550">open menu</text>
+
+  <line class="line" x1="830" y1="508" x2="660" y2="508"/>
+
+  <rect class="card" x="420" y="435" width="220" height="145"/>
+  <text class="label" x="487" y="490">Download</text>
+  <text class="small" x="468" y="522">one MP3 file</text>
+  <text class="small" x="480" y="550">per prompt</text>
+
+  <line class="line" x1="410" y1="508" x2="250" y2="508"/>
+
+  <rect class="card" x="60" y="435" width="170" height="145"/>
+  <circle class="green" cx="145" cy="480" r="18"/>
+  <text class="label" x="103" y="525">Result</text>
+  <text class="small" x="98" y="552">mp3 + url</text>
+</svg>

@@ -7,7 +7,7 @@ import { useAuth } from "@/components/AuthProvider";
 import { PlayerBar } from "@/components/PlayerBar";
 import { usePlayer } from "@/components/PlayerProvider";
 import { currentTrack } from "@/lib/demo";
-import { songSubtitle } from "@/lib/songs";
+import { songTagSummary } from "@/lib/songs";
 import { theme } from "@/lib/theme";
 
 type Props = PropsWithChildren<{
@@ -20,7 +20,7 @@ export function MusicPage({ children, playerTitle = currentTrack.name, playerSub
   const { session } = useAuth();
   const { currentSong, isPlaying, nextSong, previousSong, togglePlayPause } = usePlayer();
   const title = currentSong?.title ?? playerTitle;
-  const subtitle = currentSong ? songSubtitle(currentSong) : playerSubtitle;
+  const subtitle = currentSong ? songTagSummary(currentSong) : playerSubtitle;
 
   return (
     <View style={styles.root}>

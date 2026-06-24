@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#ef3b45"/>
+    </marker>
+    <style>
+      .bg { fill: #f7f7f9; }
+      .card { fill: #fff; stroke: #dedee6; stroke-width: 2; rx: 18; }
+      .title { font: 700 34px Arial, sans-serif; fill: #11131a; }
+      .label { font: 700 22px Arial, sans-serif; fill: #11131a; }
+      .small { font: 400 18px Arial, sans-serif; fill: #5f6270; }
+      .tiny { font: 400 15px Arial, sans-serif; fill: #737684; }
+      .line { stroke: #ef3b45; stroke-width: 5; fill: none; marker-end: url(#arrow); }
+      .accent { fill: #ef3b45; }
+      .soft { fill: #ffe8ea; stroke: #ef3b45; stroke-width: 1.5; rx: 10; }
+    </style>
+  </defs>
+  <rect class="bg" width="1200" height="700"/>
+  <text class="title" x="54" y="68">1. Training data</text>
+  <text class="small" x="56" y="102">The model learns from songs, tags, genres, and listening history.</text>
+
+  <rect class="card" x="70" y="165" width="260" height="160"/>
+  <text class="label" x="106" y="215">Music catalog</text>
+  <rect class="soft" x="105" y="240" width="170" height="32"/>
+  <text class="tiny" x="132" y="262">track tags</text>
+  <text class="small" x="106" y="300">artist, title, genre</text>
+
+  <rect class="card" x="70" y="385" width="260" height="160"/>
+  <text class="label" x="102" y="435">Listening history</text>
+  <rect class="soft" x="105" y="462" width="170" height="32"/>
+  <text class="tiny" x="125" y="484">play counts</text>
+  <text class="small" x="106" y="522">user -> track</text>
+
+  <rect class="card" x="420" y="270" width="245" height="170"/>
+  <text class="label" x="472" y="320">Clean data</text>
+  <text class="small" x="457" y="354">lowercase tags</text>
+  <text class="small" x="450" y="384">merge genre tags</text>
+  <text class="small" x="454" y="414">optional Last.fm</text>
+
+  <line class="line" x1="340" y1="245" x2="410" y2="325"/>
+  <line class="line" x1="340" y1="465" x2="410" y2="385"/>
+
+  <rect class="card" x="755" y="170" width="360" height="150"/>
+  <text class="label" x="818" y="220">Track-tag matrix</text>
+  <text class="small" x="815" y="255">rows = tracks</text>
+  <text class="small" x="815" y="285">columns = style tags</text>
+
+  <rect class="card" x="755" y="390" width="360" height="150"/>
+  <text class="label" x="817" y="440">User-track matrix</text>
+  <text class="small" x="815" y="475">rows = users</text>
+  <text class="small" x="815" y="505">values = log play count</text>
+
+  <line class="line" x1="675" y1="340" x2="745" y2="255"/>
+  <line class="line" x1="675" y1="370" x2="745" y2="465"/>
+</svg>

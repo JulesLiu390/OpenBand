@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#ef3b45"/>
+    </marker>
+    <style>
+      .bg { fill: #f7f7f9; }
+      .card { fill: #fff; stroke: #dedee6; stroke-width: 2; rx: 18; }
+      .title { font: 700 34px Arial, sans-serif; fill: #11131a; }
+      .label { font: 700 22px Arial, sans-serif; fill: #11131a; }
+      .small { font: 400 18px Arial, sans-serif; fill: #5f6270; }
+      .tiny { font: 400 15px Arial, sans-serif; fill: #737684; }
+      .line { stroke: #ef3b45; stroke-width: 5; fill: none; marker-end: url(#arrow); }
+      .album { fill: #ef3b45; opacity: 0.88; rx: 16; }
+      .album2 { fill: #67c7f0; opacity: 0.9; rx: 16; }
+    </style>
+  </defs>
+  <rect class="bg" width="1200" height="700"/>
+  <text class="title" x="54" y="68">6. Import into the library</text>
+  <text class="small" x="56" y="102">The real daily job keeps one downloaded song for each prompt.</text>
+
+  <rect class="card" x="65" y="190" width="220" height="150"/>
+  <text class="label" x="125" y="242">Batch results</text>
+  <text class="small" x="106" y="275">10 downloaded files</text>
+  <text class="small" x="122" y="305">with Suno URLs</text>
+
+  <line class="line" x1="295" y1="265" x2="390" y2="265"/>
+
+  <rect class="card" x="415" y="190" width="245" height="150"/>
+  <text class="label" x="470" y="242">Select one</text>
+  <text class="small" x="455" y="275">match result to</text>
+  <text class="small" x="455" y="305">the prompt file</text>
+
+  <line class="line" x1="670" y1="265" x2="765" y2="265"/>
+
+  <rect class="card" x="790" y="165" width="300" height="200"/>
+  <text class="label" x="850" y="215">Create song row</text>
+  <rect class="album" x="835" y="245" width="80" height="80"/>
+  <rect class="album2" x="850" y="260" width="80" height="80"/>
+  <text class="small" x="955" y="272">title</text>
+  <text class="small" x="955" y="302">album = Daily date</text>
+  <text class="small" x="955" y="332">tags + duration</text>
+
+  <line class="line" x1="940" y1="375" x2="940" y2="450"/>
+
+  <rect class="card" x="745" y="470" width="390" height="150"/>
+  <text class="label" x="830" y="522">Daily playlist ready</text>
+  <text class="small" x="805" y="555">positions 0 to 9 point to song IDs</text>
+  <text class="small" x="840" y="585">status becomes ready</text>
+
+  <line class="line" x1="735" y1="545" x2="575" y2="545"/>
+
+  <rect class="card" x="280" y="470" width="270" height="150"/>
+  <text class="label" x="338" y="522">Mobile app</text>
+  <text class="small" x="322" y="555">reads playlist</text>
+  <text class="small" x="322" y="585">streams or caches songs</text>
+</svg>

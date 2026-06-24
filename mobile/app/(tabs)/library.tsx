@@ -1,25 +1,22 @@
 import { useEffect, useMemo, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
-import { AlbumArt } from "@/components/AlbumArt";
 import { Section } from "@/components/AppShell";
 import { useAuth } from "@/components/AuthProvider";
 import { MusicPage } from "@/components/MusicPage";
 import { usePlayer } from "@/components/PlayerProvider";
 import { SongActionMenu } from "@/components/SongActionMenu";
 import { SongArtwork } from "@/components/SongArtwork";
-import { libraryAlbums } from "@/lib/demo";
 import {
   Song,
   SongCacheStatus,
   cacheSong,
-  cacheSongs,
   getSongCacheStatuses,
   listAllSongs,
   loadCachedSongs,
   readableFileSize,
   saveSongCatalog,
-  songSubtitle,
+  songTagSummary,
 } from "@/lib/songs";
 import { artworkPalettes, theme } from "@/lib/theme";
 
@@ -28,8 +25,9 @@ export default function LibraryScreen() {
   const { busySongId, currentSong, isPlaying, playSong, updateCurrentSongLike } = usePlayer();
   const [songs, setSongs] = useState<Song[]>([]);
   const [cacheStatus, setCacheStatus] = useState<Record<string, SongCacheStatus>>({});
-  const [bulkDownloading, setBulkDownloading] = useState(false);
-  const [bulkProgress, setBulkProgress] = useState("");
+  const [tagBrowserOpen, setTagBrowserOpen] = useState(false);
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [tagSort, setTagSort] = useState<TagSort>("count");
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [playerTrack, setPlayerTrack] = useState({
     title: "Lake Light",
@@ -72,17 +70,22 @@ export default function LibraryScreen() {
     };
   }, [session]);
 
-  const shortcuts = useMemo(() => {
-    const downloaded = Object.values(cacheStatus).filter((status) => status === "cached").length;
-    const tags = new Set(songs.flatMap((song) => song.tags).filter(Boolean));
-    return [
-      { label: "Tags", value: String(tags.size) },
-      { label: "Downloaded", value: String(downloaded) },
-    ];
-  }, [cacheStatus, songs]);
+  const tagFacets = useMemo(() => buildTagFacets(songs, tagSort), [songs, tagSort]);
+  const selectedTagKeys = useMemo(() => new Set(selectedTags.map(tagKey)), [selectedTags]);
+  const visibleSongs = useMemo(() => {
+    if (selectedTagKeys.size === 0) {
+      return songs;
+    }
+    return songs.filter((song) => song.tags.some((tag) => selectedTagKeys.has(tagKey(tag))));
+  }, [selectedTagKeys, songs]);
+
+  useEffect(() => {
+    const facetKeys = new Set(tagFacets.map((item) => tagKey(item.tag)));
+    setSelectedTags((current) => current.filter((tag) => facetKeys.has(tagKey(tag))));
+  }, [tagFacets]);
 
   async function selectSong(song: Song) {
-    setPlayerTrack({ title: song.title, subtitle: songSubtitle(song) });
+    setPlayerTrack({ title: song.title, subtitle: songTagSummary(song) });
     if (!session || cacheStatus[song.id] === "downloading") {
       return;
     }
@@ -116,48 +119,6 @@ export default function LibraryScreen() {
     }
   }
 
-  async function downloadAllSongs() {
-    if (!session || bulkDownloading) {
-      return;
-    }
-    const pendingSongs = songs.filter((song) => cacheStatus[song.id] !== "cached");
-    if (pendingSongs.length === 0) {
-      setSyncMessage("All songs are already downloaded.");
-      return;
-    }
-
-    setBulkDownloading(true);
-    setBulkProgress(`0/${pendingSongs.length}`);
-    setSyncMessage(null);
-    setCacheStatus((current) => {
-      const next = { ...current };
-      for (const song of pendingSongs) {
-        next[song.id] = "downloading";
-      }
-      return next;
-    });
-
-    let failed = 0;
-    try {
-      await cacheSongs(pendingSongs, session.accessToken, {
-        concurrency: 3,
-        onProgress: (item, completed, total) => {
-          if (item.error) {
-            failed += 1;
-          }
-          setBulkProgress(`${completed}/${total}`);
-          setCacheStatus((current) => ({
-            ...current,
-            [item.song.id]: item.error ? "remote" : "cached",
-          }));
-        },
-      });
-      setSyncMessage(failed ? `${failed} songs could not be downloaded.` : "Offline download complete.");
-    } finally {
-      setBulkDownloading(false);
-    }
-  }
-
   function updateSongLike(songId: string, isLiked: boolean, likedAt: string | null) {
     setSongs((current) =>
       current.map((song) => (song.id === songId ? { ...song, is_liked: isLiked, liked_at: likedAt } : song)),
@@ -165,8 +126,15 @@ export default function LibraryScreen() {
     updateCurrentSongLike(songId, isLiked, likedAt);
   }
 
+  function toggleTag(tag: string) {
+    const key = tagKey(tag);
+    setSelectedTags((current) =>
+      current.some((item) => tagKey(item) === key) ? current.filter((item) => tagKey(item) !== key) : [...current, tag],
+    );
+  }
+
   const hasRemoteSongs = songs.length > 0;
-  const pendingDownloadCount = songs.filter((song) => cacheStatus[song.id] !== "cached").length;
+  const selectedTitle = selectedTagsTitle(selectedTags);
 
   return (
     <MusicPage playerTitle={playerTrack.title} playerSubtitle={playerTrack.subtitle}>
@@ -175,98 +143,128 @@ export default function LibraryScreen() {
         <Text style={styles.title}>Library</Text>
       </Section>
 
-      <Section>
-        <View style={styles.shortcutGrid}>
-          {shortcuts.map((shortcut) => (
-            <View key={shortcut.label} style={styles.shortcut}>
-              <Text style={styles.shortcutValue}>{shortcut.value}</Text>
-              <Text style={styles.shortcutLabel}>{shortcut.label}</Text>
-            </View>
-          ))}
-        </View>
-        {hasRemoteSongs ? (
-          <Pressable
-            accessibilityRole="button"
-            disabled={bulkDownloading || pendingDownloadCount === 0}
-            onPress={downloadAllSongs}
-            style={({ pressed }) => [
-              styles.downloadAllButton,
-              pressed && styles.pressed,
-              (bulkDownloading || pendingDownloadCount === 0) && styles.disabled,
-            ]}>
-            <Text style={styles.downloadAllText}>
-              {bulkDownloading
-                ? `Downloading ${bulkProgress}`
-                : pendingDownloadCount === 0
-                  ? "All Songs Downloaded"
-                  : `Download All (${pendingDownloadCount})`}
-            </Text>
-          </Pressable>
-        ) : null}
-        {syncMessage ? <Text style={styles.syncMessage}>{syncMessage}</Text> : null}
-      </Section>
+      {syncMessage ? (
+        <Section>
+          <Text style={styles.syncMessage}>{syncMessage}</Text>
+        </Section>
+      ) : null}
 
-      <Section>
-        <Text style={styles.sectionTitle}>Recently Added</Text>
-        <View style={styles.list}>
-          {hasRemoteSongs
-            ? songs.map((song, index) => {
-                const displaySong = currentSong?.id === song.id ? currentSong : song;
-                return (
-                  <Pressable
-                    key={song.id}
-                    onPress={() => selectSong(song)}
-                    style={({ pressed }) => [styles.row, pressed && styles.pressed]}>
-                    <SongArtwork
-                      accessToken={session?.accessToken ?? null}
-                      colors={artworkPalettes[index % artworkPalettes.length]}
-                      size={58}
-                      song={displaySong}
-                    />
-                    <View style={styles.rowCopy}>
-                      <View style={styles.titleLine}>
-                        <Text style={styles.rowTitle} numberOfLines={1}>
-                          {displaySong.title}
-                        </Text>
-                        {displaySong.is_liked ? <Text style={styles.likeBadge}>♥</Text> : null}
-                      </View>
-                      <Text style={styles.rowMeta} numberOfLines={1}>
-                        {songSubtitle(displaySong)}
-                      </Text>
-                      <Text style={styles.rowDetail} numberOfLines={1}>
-                        {songDetailText(song, cacheStatus[song.id], busySongId, currentSong?.id, isPlaying)}
-                      </Text>
-                    </View>
-                    <SongActionMenu
-                      accessToken={session?.accessToken ?? null}
-                      isDownloaded={cacheStatus[displaySong.id] === "cached"}
-                      isLiked={Boolean(displaySong.is_liked)}
-                      onDownload={downloadSong}
-                      onLikeChanged={updateSongLike}
-                      song={displaySong}
-                    />
-                  </Pressable>
-                );
-              })
-            : libraryAlbums.map((album, index) => (
-                <View key={album.title} style={styles.row}>
-                  <AlbumArt colors={artworkPalettes[index % artworkPalettes.length]} size={58} />
+      {hasRemoteSongs ? (
+        <Section>
+          <View style={styles.libraryGrid}>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setTagBrowserOpen(true)}
+              style={({ pressed }) => [styles.libraryTile, pressed && styles.pressed]}>
+              <Text style={styles.tileLabel}>Tags</Text>
+              <Text style={styles.tileTitle} numberOfLines={2}>
+                {selectedTitle ?? "Tags"}
+              </Text>
+              <Text style={styles.tileMeta}>
+                {selectedTags.length ? `${visibleSongs.length} songs` : `${tagFacets.length} tags`}
+              </Text>
+            </Pressable>
+          </View>
+        </Section>
+      ) : null}
+
+      {hasRemoteSongs && tagBrowserOpen ? (
+        <Section>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Tags</Text>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setTagBrowserOpen(false)}
+              style={({ pressed }) => [styles.closeTextButton, pressed && styles.pressed]}>
+              <Text style={styles.closeText}>Done</Text>
+            </Pressable>
+          </View>
+          <View style={styles.sortControl}>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setTagSort("count")}
+              style={({ pressed }) => [styles.sortButton, tagSort === "count" && styles.sortButtonActive, pressed && styles.pressed]}>
+              <Text style={[styles.sortText, tagSort === "count" && styles.sortTextActive]}>Song Count</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setTagSort("az")}
+              style={({ pressed }) => [styles.sortButton, tagSort === "az" && styles.sortButtonActive, pressed && styles.pressed]}>
+              <Text style={[styles.sortText, tagSort === "az" && styles.sortTextActive]}>A-Z</Text>
+            </Pressable>
+          </View>
+          <View style={styles.tagList}>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setSelectedTags([])}
+              style={({ pressed }) => [styles.tagRow, selectedTags.length === 0 && styles.tagRowActive, pressed && styles.pressed]}>
+              <Text style={[styles.tagRowTitle, selectedTags.length === 0 && styles.tagRowTitleActive]}>All Tags</Text>
+              <Text style={[styles.tagRowCount, selectedTags.length === 0 && styles.tagRowCountActive]}>{songs.length}</Text>
+            </Pressable>
+            {tagFacets.map((item) => {
+              const active = selectedTagKeys.has(tagKey(item.tag));
+              return (
+                <Pressable
+                  accessibilityRole="button"
+                  key={item.tag}
+                  onPress={() => toggleTag(item.tag)}
+                  style={({ pressed }) => [styles.tagRow, active && styles.tagRowActive, pressed && styles.pressed]}>
+                  <Text style={[styles.tagRowTitle, active && styles.tagRowTitleActive]} numberOfLines={1}>
+                    {item.tag}
+                  </Text>
+                  <Text style={[styles.tagRowCount, active && styles.tagRowCountActive]}>{item.count}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </Section>
+      ) : null}
+
+      {hasRemoteSongs ? (
+        <Section>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>{selectedTitle ?? "Recently Added"}</Text>
+            <Text style={styles.sectionMeta}>{visibleSongs.length} songs</Text>
+          </View>
+          <View style={styles.list}>
+            {visibleSongs.map((song, index) => {
+              const displaySong = currentSong?.id === song.id ? currentSong : song;
+              return (
+                <Pressable
+                  key={song.id}
+                  onPress={() => selectSong(song)}
+                  style={({ pressed }) => [styles.row, pressed && styles.pressed]}>
+                  <SongArtwork
+                    accessToken={session?.accessToken ?? null}
+                    colors={artworkPalettes[index % artworkPalettes.length]}
+                    size={58}
+                    song={displaySong}
+                  />
                   <View style={styles.rowCopy}>
-                    <Text style={styles.rowTitle} numberOfLines={1}>
-                      {album.title}
-                    </Text>
-                    <Text style={styles.rowMeta} numberOfLines={1}>
-                      {album.artist}
-                    </Text>
+                    <View style={styles.titleLine}>
+                      <Text style={styles.rowTitle} numberOfLines={1}>
+                        {displaySong.title}
+                      </Text>
+                      {displaySong.is_liked ? <Text style={styles.likeBadge}>♥</Text> : null}
+                    </View>
                     <Text style={styles.rowDetail} numberOfLines={1}>
-                      {album.detail}
+                      {songDetailText(song, cacheStatus[song.id], busySongId, currentSong?.id, isPlaying)}
                     </Text>
                   </View>
-                  <Text style={styles.more}>⋯</Text>
-                </View>
-              ))}
-        </View>
-      </Section>
+                  <SongActionMenu
+                    accessToken={session?.accessToken ?? null}
+                    isDownloaded={cacheStatus[displaySong.id] === "cached"}
+                    isLiked={Boolean(displaySong.is_liked)}
+                    onDownload={downloadSong}
+                    onLikeChanged={updateSongLike}
+                    song={displaySong}
+                  />
+                </Pressable>
+              );
+            })}
+          </View>
+        </Section>
+      ) : null}
     </MusicPage>
   );
 }
@@ -287,7 +285,54 @@ function songDetailText(
   if (cacheStatus === "cached") {
     return "Cached";
   }
-  return `${readableFileSize(song.file_size)} · ${song.tags.slice(0, 3).join(", ")}`;
+  const tagPreview = songTagSummary(song);
+  return tagPreview ? `${readableFileSize(song.file_size)} · ${tagPreview}` : readableFileSize(song.file_size);
+}
+
+type TagFacet = {
+  tag: string;
+  count: number;
+};
+
+type TagSort = "count" | "az";
+
+function buildTagFacets(songs: Song[], sort: TagSort): TagFacet[] {
+  const counts = new Map<string, TagFacet>();
+  for (const song of songs) {
+    for (const rawTag of song.tags) {
+      const tag = rawTag.trim();
+      if (!tag) {
+        continue;
+      }
+      const key = tagKey(tag);
+      const current = counts.get(key);
+      if (current) {
+        current.count += 1;
+      } else {
+        counts.set(key, { tag, count: 1 });
+      }
+    }
+  }
+  return Array.from(counts.values()).sort((left, right) => {
+    if (sort === "az") {
+      return left.tag.localeCompare(right.tag) || right.count - left.count;
+    }
+    return right.count - left.count || left.tag.localeCompare(right.tag);
+  });
+}
+
+function tagKey(tag: string): string {
+  return tag.trim().toLowerCase();
+}
+
+function selectedTagsTitle(tags: string[]): string | null {
+  if (tags.length === 0) {
+    return null;
+  }
+  if (tags.length === 1) {
+    return tags[0];
+  }
+  return `${tags.length} Tags`;
 }
 
 const styles = StyleSheet.create({
@@ -302,43 +347,6 @@ const styles = StyleSheet.create({
     fontSize: 42,
     fontWeight: "900",
   },
-  shortcutGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 10,
-  },
-  shortcut: {
-    backgroundColor: theme.colors.surface,
-    borderRadius: theme.radius.md,
-    flexBasis: "48%",
-    flexGrow: 1,
-    minHeight: 86,
-    padding: 14,
-  },
-  shortcutValue: {
-    color: theme.colors.tint,
-    fontSize: 24,
-    fontWeight: "900",
-  },
-  shortcutLabel: {
-    color: theme.colors.secondaryText,
-    fontSize: 13,
-    fontWeight: "800",
-    marginTop: 6,
-  },
-  downloadAllButton: {
-    alignItems: "center",
-    backgroundColor: theme.colors.tint,
-    borderRadius: theme.radius.pill,
-    minHeight: 42,
-    justifyContent: "center",
-    paddingHorizontal: 16,
-  },
-  downloadAllText: {
-    color: "#FFFFFF",
-    fontSize: 14,
-    fontWeight: "900",
-  },
   syncMessage: {
     color: theme.colors.secondaryText,
     fontSize: 12,
@@ -348,6 +356,124 @@ const styles = StyleSheet.create({
     color: theme.colors.text,
     fontSize: 20,
     fontWeight: "900",
+  },
+  sectionHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+  },
+  sectionMeta: {
+    color: theme.colors.tertiaryText,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  libraryGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 12,
+  },
+  libraryTile: {
+    aspectRatio: 1,
+    backgroundColor: theme.colors.surface,
+    borderColor: theme.colors.hairline,
+    borderRadius: theme.radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexBasis: "48%",
+    flexGrow: 1,
+    justifyContent: "space-between",
+    maxWidth: 180,
+    minHeight: 156,
+    padding: 14,
+  },
+  tileLabel: {
+    color: theme.colors.tint,
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  tileTitle: {
+    color: theme.colors.text,
+    fontSize: 24,
+    fontWeight: "900",
+  },
+  tileMeta: {
+    color: theme.colors.secondaryText,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  closeTextButton: {
+    alignItems: "center",
+    minHeight: 32,
+    justifyContent: "center",
+    paddingHorizontal: 4,
+  },
+  closeText: {
+    color: theme.colors.tint,
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  sortControl: {
+    backgroundColor: theme.colors.surface,
+    borderColor: theme.colors.hairline,
+    borderRadius: theme.radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: "row",
+    padding: 3,
+  },
+  sortButton: {
+    alignItems: "center",
+    borderRadius: theme.radius.pill,
+    flex: 1,
+    minHeight: 34,
+    justifyContent: "center",
+  },
+  sortButtonActive: {
+    backgroundColor: theme.colors.tintSoft,
+  },
+  sortText: {
+    color: theme.colors.secondaryText,
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  sortTextActive: {
+    color: theme.colors.tint,
+  },
+  tagList: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  tagRow: {
+    alignItems: "center",
+    backgroundColor: theme.colors.surface,
+    borderColor: theme.colors.hairline,
+    borderRadius: theme.radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: "row",
+    gap: 7,
+    minHeight: 36,
+    maxWidth: "100%",
+    paddingHorizontal: 12,
+  },
+  tagRowActive: {
+    backgroundColor: theme.colors.tintSoft,
+    borderColor: theme.colors.tint,
+  },
+  tagRowTitle: {
+    color: theme.colors.text,
+    flexShrink: 1,
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  tagRowTitleActive: {
+    color: theme.colors.tint,
+  },
+  tagRowCount: {
+    color: theme.colors.tertiaryText,
+    fontSize: 11,
+    fontWeight: "900",
+  },
+  tagRowCountActive: {
+    color: theme.colors.tint,
   },
   list: {
     gap: 9,
@@ -383,27 +509,12 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     lineHeight: 14,
   },
-  rowMeta: {
-    color: theme.colors.secondaryText,
-    fontSize: 13,
-    marginTop: 3,
-  },
   rowDetail: {
     color: theme.colors.tertiaryText,
     fontSize: 12,
-    marginTop: 2,
-  },
-  more: {
-    color: theme.colors.tertiaryText,
-    fontSize: 24,
-    fontWeight: "900",
-    lineHeight: 24,
-    width: 28,
+    marginTop: 4,
   },
   pressed: {
     opacity: 0.78,
-  },
-  disabled: {
-    opacity: 0.52,
   },
 });

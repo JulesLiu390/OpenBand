@@ -122,6 +122,11 @@ export default function OnboardingScreen() {
                     <Text style={styles.tagText}>{tag}</Text>
                   </View>
                 ))}
+                {currentTags.length > 16 ? (
+                  <View style={styles.tag}>
+                    <Text style={styles.tagText}>...</Text>
+                  </View>
+                ) : null}
               </View>
             </View>
           ) : null}

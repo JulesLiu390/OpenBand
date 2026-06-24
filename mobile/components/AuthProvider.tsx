@@ -14,6 +14,7 @@ import {
   logoutSession,
   refreshAuthSession,
   saveStoredSession,
+  subscribeAuthSession,
 } from "@/lib/auth";
 
 type AuthContextValue = {
@@ -36,6 +37,13 @@ export function AuthProvider({ children }: PropsWithChildren) {
     setSession(nextSession);
     setUser(nextSession.user);
     await saveStoredSession(nextSession);
+  }, []);
+
+  useEffect(() => {
+    return subscribeAuthSession((nextSession) => {
+      setSession(nextSession);
+      setUser(nextSession?.user ?? null);
+    });
   }, []);
 
   useEffect(() => {
@@ -122,16 +130,16 @@ export function AuthProvider({ children }: PropsWithChildren) {
 
   const logout = useCallback(async () => {
     const currentSession = session;
-    setSession(null);
-    setUser(null);
-    await clearStoredSession();
-    if (!currentSession) {
-      return;
-    }
     try {
-      await logoutSession(currentSession.accessToken, currentSession.refreshToken);
+      if (currentSession) {
+        await logoutSession(currentSession.accessToken, currentSession.refreshToken);
+      }
     } catch {
       // Local logout should succeed even if the access token has already expired.
+    } finally {
+      setSession(null);
+      setUser(null);
+      await clearStoredSession();
     }
   }, [session]);
 

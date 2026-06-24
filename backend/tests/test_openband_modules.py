@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from openband.prompt_generation import cli as prompt_cli
-from openband.daily import suno_batch_failure_message
+from openband.daily import style_prompt_tags_from_text, suno_batch_failure_message
 from openband.suno_browser.client import SunoBrowserCommand, run_suno_browser_command
+from music_taste_rec.style_model import StyleTrainingConfig, train_style_model
+
+
+FIXTURE_ROOT = Path(__file__).parent / "fixtures"
+FIXTURE_RAW = FIXTURE_ROOT / "raw"
 
 
 def test_prompt_generation_prompts_are_packaged() -> None:
@@ -22,6 +29,32 @@ def test_prompt_generation_corrects_allowed_style_tags() -> None:
     assert corrections == [{"raw": "electronic rock", "corrected": "electronic", "method": "alias"}]
     assert rejected == ["totally unknown"]
     assert exact == ["jazz"]
+
+
+def test_style_prompt_tags_map_positive_prompt_and_ignore_negative_tags() -> None:
+    model = train_style_model(
+        StyleTrainingConfig(
+            raw_dir=FIXTURE_RAW,
+            min_tag_tracks=1,
+            max_tags=50,
+            n_components=3,
+        )
+    )
+
+    tags = style_prompt_tags_from_text(
+        model,
+        (
+            "Dark electronic rock with distorted guitar, pulsing synth texture, "
+            "no ambient, no piano, no choir."
+        ),
+    )
+
+    assert "dark" in tags
+    assert "electronic" in tags
+    assert "rock" in tags
+    assert "guitar" in tags
+    assert "ambient" not in tags
+    assert "piano" not in tags
 
 
 def test_suno_browser_command_json_output() -> None:

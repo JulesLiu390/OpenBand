@@ -1,11 +1,11 @@
-import { useRouter } from "expo-router";
-import { useCallback, useEffect, useState } from "react";
+import { useFocusEffect, useRouter } from "expo-router";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Modal, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { Section } from "@/components/AppShell";
 import { useAuth } from "@/components/AuthProvider";
 import { MusicPage } from "@/components/MusicPage";
-import { getMusicTags } from "@/lib/taste";
+import { getMusicTags, subscribeMusicTags } from "@/lib/taste";
 import { theme } from "@/lib/theme";
 
 export default function MeScreen() {
@@ -16,6 +16,7 @@ export default function MeScreen() {
   const [loggingOut, setLoggingOut] = useState(false);
   const [tags, setTags] = useState<string[]>([]);
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
+  const sortedTags = useMemo(() => [...tags].sort((left, right) => left.localeCompare(right)), [tags]);
 
   const loadTags = useCallback(async () => {
     if (!session) {
@@ -35,8 +36,17 @@ export default function MeScreen() {
   }, [session]);
 
   useEffect(() => {
-    loadTags();
-  }, [loadTags]);
+    return subscribeMusicTags((response) => {
+      setTags(response.tags);
+      setUpdatedAt(response.updated_at);
+    });
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadTags();
+    }, [loadTags]),
+  );
 
   async function submitLogout() {
     if (loggingOut) {
@@ -87,9 +97,9 @@ export default function MeScreen() {
             <Text style={styles.iconButtonText}>＋</Text>
           </Pressable>
         </View>
-        {tags.length ? (
+        {sortedTags.length ? (
           <View style={styles.tagWrap}>
-            {tags.map((tag) => (
+            {sortedTags.map((tag) => (
               <View key={tag} style={styles.tag}>
                 <Text style={styles.tagText}>{tag}</Text>
               </View>

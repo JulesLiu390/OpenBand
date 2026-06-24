@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#ef3b45"/>
+    </marker>
+    <style>
+      .bg { fill: #f7f7f9; }
+      .card { fill: #fff; stroke: #dedee6; stroke-width: 2; rx: 18; }
+      .title { font: 700 34px Arial, sans-serif; fill: #11131a; }
+      .label { font: 700 22px Arial, sans-serif; fill: #11131a; }
+      .small { font: 400 18px Arial, sans-serif; fill: #5f6270; }
+      .tiny { font: 400 15px Arial, sans-serif; fill: #737684; }
+      .line { stroke: #ef3b45; stroke-width: 5; fill: none; marker-end: url(#arrow); }
+      .soft { fill: #ffe8ea; stroke: #ef3b45; stroke-width: 1.5; rx: 10; }
+      .soft2 { fill: #eaf2ff; stroke: #3a7bd5; stroke-width: 1.5; rx: 10; }
+    </style>
+  </defs>
+  <rect class="bg" width="1200" height="700"/>
+  <text class="title" x="54" y="68">4. From tags to a Suno prompt</text>
+  <text class="small" x="56" y="102">For each tag set, the LLM makes a detailed song plan.</text>
+
+  <rect class="card" x="55" y="250" width="210" height="150"/>
+  <text class="label" x="100" y="302">One tag set</text>
+  <text class="small" x="91" y="337">6 tags for</text>
+  <text class="small" x="100" y="367">one song</text>
+
+  <line class="line" x1="275" y1="325" x2="375" y2="325"/>
+
+  <rect class="card" x="400" y="160" width="260" height="330"/>
+  <text class="label" x="458" y="210">3 brief ideas</text>
+  <rect class="soft" x="435" y="242" width="190" height="44"/>
+  <text class="tiny" x="457" y="269">reference anchor 1</text>
+  <rect class="soft" x="435" y="308" width="190" height="44"/>
+  <text class="tiny" x="457" y="335">reference anchor 2</text>
+  <rect class="soft" x="435" y="374" width="190" height="44"/>
+  <text class="tiny" x="457" y="401">reference anchor 3</text>
+  <text class="small" x="438" y="455">choose 1 by stable seed</text>
+
+  <line class="line" x1="670" y1="325" x2="760" y2="325"/>
+
+  <rect class="card" x="785" y="145" width="300" height="380"/>
+  <text class="label" x="857" y="195">Two prompts</text>
+  <rect class="soft2" x="830" y="235" width="210" height="70"/>
+  <text class="label" x="870" y="265">Style</text>
+  <text class="tiny" x="855" y="288">sound, band, voice</text>
+  <rect class="soft2" x="830" y="340" width="210" height="70"/>
+  <text class="label" x="865" y="370">Lyrics</text>
+  <text class="tiny" x="858" y="393">words or structure</text>
+  <text class="small" x="838" y="465">save one .md file</text>
+</svg>

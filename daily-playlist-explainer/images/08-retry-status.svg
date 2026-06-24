@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#ef3b45"/>
+    </marker>
+    <style>
+      .bg { fill: #f7f7f9; }
+      .card { fill: #fff; stroke: #dedee6; stroke-width: 2; rx: 18; }
+      .title { font: 700 34px Arial, sans-serif; fill: #11131a; }
+      .label { font: 700 20px Arial, sans-serif; fill: #11131a; }
+      .small { font: 400 18px Arial, sans-serif; fill: #5f6270; }
+      .tiny { font: 400 15px Arial, sans-serif; fill: #737684; }
+      .line { stroke: #ef3b45; stroke-width: 4; fill: none; marker-end: url(#arrow); }
+      .ok { fill: #31a66a; }
+      .warn { fill: #f5b342; }
+      .bad { fill: #ef3b45; }
+    </style>
+  </defs>
+  <rect class="bg" width="1200" height="700"/>
+  <text class="title" x="54" y="68">7. Status and retry</text>
+  <text class="small" x="56" y="102">A daily job keeps state, so retry can continue from the Suno step.</text>
+
+  <rect class="card" x="55" y="185" width="175" height="95"/>
+  <text class="label" x="88" y="240">generating_tags</text>
+  <line class="line" x1="240" y1="232" x2="315" y2="232"/>
+
+  <rect class="card" x="330" y="185" width="190" height="95"/>
+  <text class="label" x="368" y="228">song_prompts</text>
+  <text class="tiny" x="370" y="254">brief + style + lyrics</text>
+  <line class="line" x1="530" y1="232" x2="605" y2="232"/>
+
+  <rect class="card" x="620" y="185" width="160" height="95"/>
+  <text class="label" x="662" y="240">suno_queue</text>
+  <line class="line" x1="790" y1="232" x2="865" y2="232"/>
+
+  <rect class="card" x="880" y="185" width="230" height="95"/>
+  <text class="label" x="928" y="228">suno_batch_N</text>
+  <text class="tiny" x="930" y="254">submit, wait, download</text>
+
+  <line class="line" x1="995" y1="290" x2="995" y2="365"/>
+
+  <rect class="card" x="840" y="385" width="310" height="115"/>
+  <circle class="ok" cx="885" cy="432" r="13"/>
+  <text class="label" x="912" y="438">ready</text>
+  <text class="small" x="885" y="470">all songs imported</text>
+
+  <path class="line" d="M885 505 C800 590, 400 590, 270 505"/>
+
+  <rect class="card" x="60" y="385" width="335" height="145"/>
+  <circle class="warn" cx="105" cy="430" r="13"/>
+  <text class="label" x="132" y="436">captcha_required or failed</text>
+  <text class="small" x="105" y="470">state file keeps submitted tasks</text>
+  <text class="small" x="105" y="500">retry resumes from Suno/download</text>
+
+  <rect class="card" x="455" y="385" width="300" height="145"/>
+  <circle class="bad" cx="500" cy="430" r="13"/>
+  <text class="label" x="527" y="436">error message</text>
+  <text class="small" x="500" y="470">shown in front end</text>
+  <text class="small" x="500" y="500">user can press Retry</text>
+</svg>

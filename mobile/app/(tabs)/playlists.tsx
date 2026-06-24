@@ -24,7 +24,7 @@ import {
   listAllSongs,
   loadCachedSongs,
   mergeSongCatalog,
-  songSubtitle,
+  songTagSummary,
 } from "@/lib/songs";
 import { artworkPalettes, theme } from "@/lib/theme";
 
@@ -64,8 +64,9 @@ export default function PlaylistsScreen() {
           if (!mounted) {
             return;
           }
-          const nextSelected =
-            playlistResponse.playlists.find((playlist) => playlist.id === selectedPlaylistId) ?? playlistResponse.playlists[0];
+          const nextSelected = selectedPlaylistId
+            ? playlistResponse.playlists.find((playlist) => playlist.id === selectedPlaylistId)
+            : undefined;
           const nextSelectedDetail = nextSelected ? await getPlaylist(session.accessToken, nextSelected.id) : null;
           const statusSongs = [...songResponse.songs, ...(nextSelectedDetail?.songs ?? [])];
           await mergeSongCatalog(session.user.id, statusSongs);
@@ -143,6 +144,10 @@ export default function PlaylistsScreen() {
   }
 
   async function selectPlaylist(playlist: PlaylistSummary) {
+    if (selectedPlaylist?.id === playlist.id) {
+      setSelectedPlaylist(null);
+      return;
+    }
     if (!session) {
       return;
     }
@@ -170,6 +175,14 @@ export default function PlaylistsScreen() {
     } catch {
       setCacheStatus((current) => ({ ...current, [song.id]: "remote" }));
     }
+  }
+
+  async function playSelectedPlaylist() {
+    const firstSong = selectedPlaylist?.songs[0];
+    if (!firstSong) {
+      return;
+    }
+    await playFromPlaylist(firstSong);
   }
 
   async function downloadSong(song: Song) {
@@ -265,21 +278,23 @@ export default function PlaylistsScreen() {
           <View style={styles.featuredCopy}>
             <Text style={styles.featuredLabel}>Selected List</Text>
             <Text style={styles.featuredTitle} numberOfLines={1}>
-              {selectedPlaylist?.name ?? "No Playlist Yet"}
+              {selectedPlaylist?.name ?? "No List Selected"}
             </Text>
             <Text style={styles.featuredMeta} numberOfLines={2}>
               {selectedPlaylist
                 ? `${selectedPlaylist.song_count} songs · ${selectedIsSystem ? "System list" : "Personal list"}`
-                : "Create a list and add songs from your library"}
+                : playlists.length
+                  ? "Select a list to view songs"
+                  : "Create a list and add songs from your library"}
             </Text>
           </View>
           {selectedPlaylist?.songs.length ? (
             <Pressable
               accessibilityLabel="Play selected playlist"
               accessibilityRole="button"
-              onPress={() => playFromPlaylist(selectedPlaylist.songs[0])}
+              onPress={playSelectedPlaylist}
               style={({ pressed }) => [styles.playButton, pressed && styles.pressed]}>
-              <Text style={styles.playButtonText}>▶</Text>
+              <Text style={styles.playButtonText}>Play All</Text>
             </Pressable>
           ) : null}
         </View>
@@ -320,6 +335,7 @@ export default function PlaylistsScreen() {
             {selectedPlaylist.songs.length ? (
               selectedPlaylist.songs.map((song, index) => {
                 const displaySong = currentSong?.id === song.id ? currentSong : song;
+                const tagPreview = songTagSummary(displaySong);
                 return (
                   <Pressable
                     key={song.id}
@@ -338,9 +354,11 @@ export default function PlaylistsScreen() {
                         </Text>
                         {displaySong.is_liked ? <Text style={styles.likeBadge}>♥</Text> : null}
                       </View>
-                      <Text style={styles.rowMeta} numberOfLines={1}>
-                        {songSubtitle(displaySong)}
-                      </Text>
+                      {tagPreview ? (
+                        <Text style={styles.rowMeta} numberOfLines={1}>
+                          {tagPreview}
+                        </Text>
+                      ) : null}
                       <Text style={[styles.rowDetail, currentSong?.id === song.id && styles.activeText]}>
                         {busySongId === song.id || cacheStatus[song.id] === "downloading"
                           ? "Loading"
@@ -383,36 +401,41 @@ export default function PlaylistsScreen() {
         <Section>
           <Text style={styles.sectionTitle}>Add Songs</Text>
           <View style={styles.list}>
-            {availableSongs.map((song, index) => (
-              <View key={song.id} style={styles.row}>
-                <SongArtwork
-                  accessToken={session?.accessToken ?? null}
-                  colors={artworkPalettes[(index + 2) % artworkPalettes.length]}
-                  size={54}
-                  song={song}
-                />
-                <View style={styles.rowCopy}>
-                  <View style={styles.titleLine}>
-                    <Text style={styles.rowTitle} numberOfLines={1}>
-                      {song.title}
-                    </Text>
-                    {song.is_liked ? <Text style={styles.likeBadge}>♥</Text> : null}
+            {availableSongs.map((song, index) => {
+              const tagPreview = songTagSummary(song);
+              return (
+                <View key={song.id} style={styles.row}>
+                  <SongArtwork
+                    accessToken={session?.accessToken ?? null}
+                    colors={artworkPalettes[(index + 2) % artworkPalettes.length]}
+                    size={54}
+                    song={song}
+                  />
+                  <View style={styles.rowCopy}>
+                    <View style={styles.titleLine}>
+                      <Text style={styles.rowTitle} numberOfLines={1}>
+                        {song.title}
+                      </Text>
+                      {song.is_liked ? <Text style={styles.likeBadge}>♥</Text> : null}
+                    </View>
+                    {tagPreview ? (
+                      <Text style={styles.rowMeta} numberOfLines={1}>
+                        {tagPreview}
+                      </Text>
+                    ) : null}
                   </View>
-                  <Text style={styles.rowMeta} numberOfLines={1}>
-                    {songSubtitle(song)}
-                  </Text>
+                  <SongActionMenu
+                    accessToken={session?.accessToken ?? null}
+                    isDownloaded={cacheStatus[song.id] === "cached"}
+                    isLiked={Boolean(song.is_liked)}
+                    onAddedToPlaylist={refreshAfterPlaylistChange}
+                    onDownload={downloadSong}
+                    onLikeChanged={updateSongLike}
+                    song={song}
+                  />
                 </View>
-                <SongActionMenu
-                  accessToken={session?.accessToken ?? null}
-                  isDownloaded={cacheStatus[song.id] === "cached"}
-                  isLiked={Boolean(song.is_liked)}
-                  onAddedToPlaylist={refreshAfterPlaylistChange}
-                  onDownload={downloadSong}
-                  onLikeChanged={updateSongLike}
-                  song={song}
-                />
-              </View>
-            ))}
+              );
+            })}
           </View>
         </Section>
       ) : null}
@@ -517,15 +540,15 @@ const styles = StyleSheet.create({
     alignItems: "center",
     backgroundColor: theme.colors.tint,
     borderRadius: 999,
-    height: 42,
+    minHeight: 42,
     justifyContent: "center",
-    width: 42,
+    paddingHorizontal: 14,
   },
   playButtonText: {
     color: "#FFFFFF",
-    fontSize: 17,
+    fontSize: 13,
     fontWeight: "900",
-    lineHeight: 19,
+    lineHeight: 18,
   },
   sectionHeader: {
     alignItems: "center",
