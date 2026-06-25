@@ -1,11 +1,13 @@
 import * as FileSystem from "expo-file-system/legacy";
 import { Platform } from "react-native";
 
-import { ApiError, authFetch, getApiBaseUrl, getFreshAccessToken } from "@/lib/auth";
+import { ApiError, authFetch, getApiBaseUrl, getFreshAccessToken, loadStoredSession } from "@/lib/auth";
+import { readUserCache, writeUserCache } from "@/lib/cache";
 
 const CACHE_DIR = `${FileSystem.documentDirectory ?? ""}openband-songs/`;
 const COVER_CACHE_DIR = `${FileSystem.documentDirectory ?? ""}openband-covers/`;
 const SONG_CATALOG_STORAGE_KEY_PREFIX = "openband.songs.catalog";
+const COVER_STORAGE_KEY_PREFIX = "openband.song_covers";
 
 export type Song = {
   id: string;
@@ -28,7 +30,7 @@ export type Song = {
   updated_at: string;
 };
 
-type SongListResponse = {
+export type SongListResponse = {
   songs: Song[];
   limit: number;
   offset: number;
@@ -53,14 +55,43 @@ type SongCatalogSnapshot = {
   songs: Song[];
 };
 
+export type CachedSongList = {
+  updatedAt: string;
+  isStale: boolean;
+  songs: Song[];
+  total: number;
+  limit: number;
+  nextOffset: number;
+  hasMore: boolean;
+};
+
+type SongListCacheSnapshot = {
+  lists: Record<string, CachedSongList>;
+};
+
 export type SongLikeResponse = {
   song_id: string;
   is_liked: boolean;
   liked_at: string | null;
 };
 
-export async function listSongs(accessToken: string, limit = 50, offset = 0): Promise<SongListResponse> {
-  const response = await authFetch(`/v1/songs?limit=${limit}&offset=${offset}`, accessToken);
+export async function listSongs(
+  accessToken: string,
+  limit = 50,
+  offset = 0,
+  options: { q?: string | null; tag?: string | null } = {},
+): Promise<SongListResponse> {
+  const params = new URLSearchParams({
+    limit: String(limit),
+    offset: String(offset),
+  });
+  if (options.tag) {
+    params.set("tag", options.tag);
+  }
+  if (options.q) {
+    params.set("q", options.q);
+  }
+  const response = await authFetch(`/v1/songs?${params.toString()}`, accessToken);
   await assertOk(response);
   return (await response.json()) as SongListResponse;
 }
@@ -99,10 +130,13 @@ export async function listDailySongs(accessToken: string, limit = 20): Promise<S
   return (await response.json()) as SongListResponse;
 }
 
-export async function listLikedSongs(accessToken: string, limit = 50): Promise<SongListResponse> {
-  const response = await authFetch(`/v1/songs/liked?limit=${limit}`, accessToken);
+export async function listLikedSongs(accessToken: string, limit = 50, offset = 0): Promise<SongListResponse> {
+  const response = await authFetch(`/v1/songs/liked?limit=${limit}&offset=${offset}`, accessToken);
   await assertOk(response);
-  return (await response.json()) as SongListResponse;
+  const body = (await response.json()) as SongListResponse;
+  const session = await loadStoredSession();
+  await saveSongListCache(session?.user.id, songListCacheKey("liked"), body, { append: offset > 0 });
+  return body;
 }
 
 export async function getSong(accessToken: string, songId: string): Promise<Song> {
@@ -116,7 +150,99 @@ export async function setSongLiked(accessToken: string, songId: string, liked: b
     method: liked ? "PUT" : "DELETE",
   });
   await assertOk(response);
-  return (await response.json()) as SongLikeResponse;
+  const body = (await response.json()) as SongLikeResponse;
+  const session = await loadStoredSession();
+  await patchCachedSongLike(session?.user.id, body.song_id, body.is_liked, body.liked_at);
+  return body;
+}
+
+export function songListCacheKey(kind: string, qualifier = "all"): string {
+  return `${kind}:${qualifier}`;
+}
+
+export async function loadSongListCache(
+  userId: number | null | undefined,
+  key: string,
+): Promise<CachedSongList | null> {
+  const snapshot = await readSongListCacheSnapshot(userId);
+  return snapshot.lists[key] ?? null;
+}
+
+export async function saveSongListCache(
+  userId: number | null | undefined,
+  key: string,
+  response: SongListResponse,
+  options: { append?: boolean } = {},
+): Promise<CachedSongList> {
+  const snapshot = await readSongListCacheSnapshot(userId);
+  const existingSongs = options.append ? snapshot.lists[key]?.songs ?? [] : [];
+  const songs = uniqueSongsById([...existingSongs, ...response.songs]);
+  const nextOffset = Math.max(response.offset + response.songs.length, songs.length);
+  const nextList: CachedSongList = {
+    updatedAt: new Date().toISOString(),
+    isStale: false,
+    songs,
+    total: response.total,
+    limit: response.limit,
+    nextOffset,
+    hasMore: nextOffset < response.total,
+  };
+  snapshot.lists[key] = nextList;
+  await writeSongListCacheSnapshot(userId, snapshot);
+  await mergeSongCatalog(userId, response.songs);
+  return nextList;
+}
+
+export async function markSongListCachesStale(
+  userId: number | null | undefined,
+  keys?: string[],
+): Promise<void> {
+  const snapshot = await readSongListCacheSnapshot(userId);
+  const targetKeys = keys ?? Object.keys(snapshot.lists);
+  let changed = false;
+  for (const key of targetKeys) {
+    if (snapshot.lists[key]) {
+      snapshot.lists[key] = { ...snapshot.lists[key], isStale: true };
+      changed = true;
+    }
+  }
+  if (changed) {
+    await writeSongListCacheSnapshot(userId, snapshot);
+  }
+}
+
+export async function patchCachedSongLike(
+  userId: number | null | undefined,
+  songId: string,
+  isLiked: boolean,
+  likedAt: string | null,
+): Promise<void> {
+  await patchSongCatalog(userId, (song) =>
+    song.id === songId ? { ...song, is_liked: isLiked, liked_at: likedAt } : song,
+  );
+
+  const snapshot = await readSongListCacheSnapshot(userId);
+  let changed = false;
+  for (const [key, list] of Object.entries(snapshot.lists)) {
+    let songs = list.songs.map((song) =>
+      song.id === songId ? { ...song, is_liked: isLiked, liked_at: likedAt } : song,
+    );
+    if (!isLiked && key === songListCacheKey("liked")) {
+      songs = songs.filter((song) => song.id !== songId);
+    }
+    if (songs !== list.songs || list.songs.some((song) => song.id === songId)) {
+      snapshot.lists[key] = {
+        ...list,
+        isStale: true,
+        songs,
+        total: key === songListCacheKey("liked") && !isLiked ? Math.max(0, list.total - 1) : list.total,
+      };
+      changed = true;
+    }
+  }
+  if (changed) {
+    await writeSongListCacheSnapshot(userId, snapshot);
+  }
 }
 
 export async function saveSongCatalog(userId: number | null | undefined, songs: Song[]): Promise<void> {
@@ -174,6 +300,36 @@ export async function loadSongCatalog(userId: number | null | undefined): Promis
     }
     return [];
   }
+}
+
+async function patchSongCatalog(
+  userId: number | null | undefined,
+  patcher: (song: Song) => Song,
+): Promise<void> {
+  const songs = await loadSongCatalog(userId);
+  if (songs.length === 0) {
+    return;
+  }
+  await saveSongCatalog(userId, songs.map(patcher));
+}
+
+async function readSongListCacheSnapshot(
+  userId: number | null | undefined,
+): Promise<SongListCacheSnapshot> {
+  const snapshot = await readUserCache<SongListCacheSnapshot>("song-lists", userId);
+  if (!snapshot?.data || typeof snapshot.data !== "object") {
+    return { lists: {} };
+  }
+  return {
+    lists: snapshot.data.lists ?? {},
+  };
+}
+
+async function writeSongListCacheSnapshot(
+  userId: number | null | undefined,
+  snapshot: SongListCacheSnapshot,
+): Promise<void> {
+  await writeUserCache("song-lists", userId, snapshot);
 }
 
 export async function loadCachedSongs(userId: number | null | undefined): Promise<Song[]> {
@@ -270,25 +426,63 @@ export async function cacheSongs(
 }
 
 export async function getCachedSongCoverUri(song: Song): Promise<string | null> {
-  if (!canUseNativeCache() || !song.cover_url) {
+  if (!song.cover_url) {
     return null;
   }
+  if (Platform.OS === "web") {
+    return globalThis.localStorage?.getItem(songCoverStorageKey(song)) ?? null;
+  }
+  if (!canUseNativeCache()) {
+    return null;
+  }
+
   const uri = coverCacheUriForSong(song);
   const info = await FileSystem.getInfoAsync(uri);
-  return info.exists ? uri : null;
+  if (info.exists) {
+    return uri;
+  }
+
+  const legacyUri = legacyCoverCacheUriForSong(song);
+  const legacyInfo = await FileSystem.getInfoAsync(legacyUri);
+  if (!legacyInfo.exists) {
+    return null;
+  }
+
+  await ensureCoverCacheDirectory();
+  await FileSystem.copyAsync({ from: legacyUri, to: uri });
+  return uri;
 }
 
 export async function cacheSongCover(song: Song, accessToken: string): Promise<SongCacheResult | null> {
   if (!song.cover_url) {
     return null;
   }
-  if (!canUseNativeCache()) {
-    return { uri: absoluteSongUrl(song.cover_url), cached: false };
-  }
-
   const cachedUri = await getCachedSongCoverUri(song);
   if (cachedUri) {
     return { uri: cachedUri, cached: true };
+  }
+
+  if (Platform.OS === "web") {
+    const freshAccessToken = await getFreshAccessToken(accessToken);
+    const response = await fetch(absoluteSongUrl(song.cover_url), {
+      headers: {
+        Authorization: `Bearer ${freshAccessToken}`,
+      },
+    });
+    if (!response.ok) {
+      throw new ApiError(`Cover failed with status ${response.status}.`, response.status);
+    }
+    const dataUri = await blobToDataUri(await response.blob());
+    try {
+      globalThis.localStorage?.setItem(songCoverStorageKey(song), dataUri);
+    } catch {
+      // The cover can still be displayed for this render even if persistent web storage is full.
+    }
+    return { uri: dataUri, cached: true };
+  }
+
+  if (!canUseNativeCache()) {
+    return { uri: absoluteSongUrl(song.cover_url), cached: false };
   }
 
   await ensureCoverCacheDirectory();
@@ -340,7 +534,15 @@ function cacheUriForSong(song: Song): string {
 }
 
 function coverCacheUriForSong(song: Song): string {
+  return `${COVER_CACHE_DIR}${song.id}.jpg`;
+}
+
+function legacyCoverCacheUriForSong(song: Song): string {
   return `${COVER_CACHE_DIR}${song.id}-${song.file_sha256.slice(0, 16)}.jpg`;
+}
+
+function songCoverStorageKey(song: Song): string {
+  return `${COVER_STORAGE_KEY_PREFIX}.${song.id}`;
 }
 
 function songCatalogPath(userId: number | null | undefined): string {
@@ -384,6 +586,21 @@ async function mapConcurrent<T, R>(
 
   await Promise.all(Array.from({ length: workerCount }, () => worker()));
   return results;
+}
+
+function blobToDataUri(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error("Cover could not be cached."));
+    reader.onloadend = () => {
+      if (typeof reader.result === "string") {
+        resolve(reader.result);
+      } else {
+        reject(new Error("Cover could not be cached."));
+      }
+    };
+    reader.readAsDataURL(blob);
+  });
 }
 
 async function ensureCacheDirectory(): Promise<void> {

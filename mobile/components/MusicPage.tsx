@@ -11,11 +11,17 @@ import { songTagSummary } from "@/lib/songs";
 import { theme } from "@/lib/theme";
 
 type Props = PropsWithChildren<{
+  onEndReached?: () => void;
   playerTitle?: string;
   playerSubtitle?: string;
 }>;
 
-export function MusicPage({ children, playerTitle = currentTrack.name, playerSubtitle = currentTrack.artist }: Props) {
+export function MusicPage({
+  children,
+  onEndReached,
+  playerTitle = currentTrack.name,
+  playerSubtitle = currentTrack.artist,
+}: Props) {
   const router = useRouter();
   const { session } = useAuth();
   const { currentSong, isPlaying, nextSong, previousSong, togglePlayPause } = usePlayer();
@@ -24,7 +30,7 @@ export function MusicPage({ children, playerTitle = currentTrack.name, playerSub
 
   return (
     <View style={styles.root}>
-      <AppShell>{children}</AppShell>
+      <AppShell onEndReached={onEndReached}>{children}</AppShell>
       <View style={styles.dock}>
         <PlayerBar
           onPress={() =>

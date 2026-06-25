@@ -217,6 +217,32 @@ class ResumeAwareDailyGenerator:
         )
 
 
+class PreSunoFailThenSucceedDailyGenerator:
+    def __init__(self):
+        self.runs = []
+
+    def run(self, context: DailyGenerationContext) -> None:
+        self.runs.append({"job_id": context.job_id, "resume": context.resume})
+        if len(self.runs) == 1:
+            raise RuntimeError("profile tags were missing")
+
+        context.daily_store.replace_daily_songs(
+            daily_playlist_id=context.playlist_id,
+            songs=[],
+        )
+        context.daily_store.set_playlist_status(
+            playlist_id=context.playlist_id,
+            status="ready",
+            job_id=context.job_id,
+            prompt_seed={"date": context.date, "mock": True},
+            completed=True,
+        )
+        context.daily_store.mark_job_succeeded(
+            job_id=context.job_id,
+            result={"daily_playlist_id": context.playlist_id, "song_count": 0},
+        )
+
+
 def test_song_upload_list_and_audio_download(tmp_path: Path) -> None:
     client = TestClient(
         create_app(
@@ -311,6 +337,20 @@ def test_song_upload_list_and_audio_download(tmp_path: Path) -> None:
     assert filtered.status_code == 200
     assert filtered.json()["total"] == 1
 
+    title_search = client.get("/v1/songs?q=lake", headers=headers)
+    assert title_search.status_code == 200
+    assert title_search.json()["total"] == 1
+    assert title_search.json()["songs"][0]["id"] == song["id"]
+
+    tag_search = client.get("/v1/songs?q=piano", headers=headers)
+    assert tag_search.status_code == 200
+    assert tag_search.json()["total"] == 1
+    assert tag_search.json()["songs"][0]["id"] == song["id"]
+
+    missing_search = client.get("/v1/songs?q=metal", headers=headers)
+    assert missing_search.status_code == 200
+    assert missing_search.json()["total"] == 0
+
     missing_filter = client.get("/v1/songs?tag=metal", headers=headers)
     assert missing_filter.status_code == 200
     assert missing_filter.json()["total"] == 0
@@ -368,6 +408,7 @@ def test_song_upload_list_and_audio_download(tmp_path: Path) -> None:
     assert playlist["id"].startswith("playlist_")
     assert playlist["name"] == "Night Drive"
     assert playlist["song_count"] == 0
+    assert playlist["cover_song_id"] is None
 
     playlist_list = client.get("/v1/playlists", headers=headers)
     assert playlist_list.status_code == 200
@@ -384,9 +425,20 @@ def test_song_upload_list_and_audio_download(tmp_path: Path) -> None:
     playlist_detail = playlist_add.json()
     assert playlist_detail["song_count"] == 1
     assert playlist_detail["songs"][0]["id"] == song["id"]
+    assert playlist_detail["cover_song_id"] == song["id"]
+
+    playlist_update = client.patch(
+        f"/v1/playlists/{playlist['id']}",
+        headers=headers,
+        json={"name": "Night Drive Edited", "cover_song_id": song["id"]},
+    )
+    assert playlist_update.status_code == 200
+    assert playlist_update.json()["name"] == "Night Drive Edited"
+    assert playlist_update.json()["cover_song_id"] == song["id"]
 
     playlist_get = client.get(f"/v1/playlists/{playlist['id']}", headers=headers)
     assert playlist_get.status_code == 200
+    assert playlist_get.json()["name"] == "Night Drive Edited"
     assert playlist_get.json()["songs"][0]["title"] == "Lake Light"
 
     playlist_remove = client.delete(
@@ -395,6 +447,7 @@ def test_song_upload_list_and_audio_download(tmp_path: Path) -> None:
     )
     assert playlist_remove.status_code == 200
     assert playlist_remove.json()["song_count"] == 0
+    assert playlist_remove.json()["cover_song_id"] is None
     assert playlist_remove.json()["songs"] == []
 
 
@@ -648,6 +701,85 @@ def test_daily_generation_force_retry_resumes_failed_suno_job_for_stale_clients(
         {"job_id": job_id, "resume": False},
         {"job_id": job_id, "resume": True},
     ]
+
+
+def test_daily_generation_resume_without_batches_starts_fresh_job_for_allowlisted_user(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("openband.daily.TEMP_PRE_SUNO_RETRY_USER_IDS", {1})
+    generator = PreSunoFailThenSucceedDailyGenerator()
+    client = TestClient(
+        create_app(
+            model_path=tmp_path / "missing-model.joblib",
+            auth_db_path=tmp_path / "openband.sqlite3",
+            song_storage_root=tmp_path / "songs",
+            admin_key=ADMIN_KEY,
+            daily_generator=generator,
+        )
+    )
+    headers = _login_headers(client)
+
+    failed = client.post(
+        "/v1/daily/today/generate",
+        headers=headers,
+        json={"date": "2026-06-25", "wait": True},
+    )
+    assert failed.status_code == 200
+    failed_body = failed.json()
+    failed_job_id = failed_body["job"]["id"]
+    assert failed_body["status"] == "failed"
+    assert failed_body["job"]["batches"] == []
+
+    retried = client.post(
+        "/v1/daily/today/generate",
+        headers=headers,
+        json={"date": "2026-06-25", "resume": True, "wait": True},
+    )
+    assert retried.status_code == 200
+    retried_body = retried.json()
+    retried_job_id = retried_body["job"]["id"]
+    assert retried_body["status"] == "ready"
+    assert retried_job_id != failed_job_id
+    assert retried_body["job"]["status"] == "succeeded"
+    assert generator.runs == [
+        {"job_id": failed_job_id, "resume": False},
+        {"job_id": retried_job_id, "resume": False},
+    ]
+
+
+def test_daily_generation_resume_without_batches_still_409s_for_other_users(tmp_path: Path) -> None:
+    generator = PreSunoFailThenSucceedDailyGenerator()
+    client = TestClient(
+        create_app(
+            model_path=tmp_path / "missing-model.joblib",
+            auth_db_path=tmp_path / "openband.sqlite3",
+            song_storage_root=tmp_path / "songs",
+            admin_key=ADMIN_KEY,
+            daily_generator=generator,
+        )
+    )
+    headers = _login_headers(client)
+
+    failed = client.post(
+        "/v1/daily/today/generate",
+        headers=headers,
+        json={"date": "2026-06-25", "wait": True},
+    )
+    assert failed.status_code == 200
+    failed_body = failed.json()
+    failed_job_id = failed_body["job"]["id"]
+    assert failed_body["status"] == "failed"
+    assert failed_body["job"]["batches"] == []
+
+    retried = client.post(
+        "/v1/daily/today/generate",
+        headers=headers,
+        json={"date": "2026-06-25", "resume": True, "wait": True},
+    )
+    assert retried.status_code == 409
+    assert retried.json()["detail"] == "No resumable daily job found for this user, date, and playlist."
+    assert generator.runs == [{"job_id": failed_job_id, "resume": False}]
 
 
 def test_daily_generation_resume_uses_requested_job_id_not_latest_failed_job(tmp_path: Path) -> None:

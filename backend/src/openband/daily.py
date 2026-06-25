@@ -31,6 +31,7 @@ DAILY_SUNO_TIMEOUT_ENV = "OPENBAND_DAILY_SUNO_TIMEOUT_SECONDS"
 SUNO_CAPTCHA_ERROR_CODE = "SUNO_CAPTCHA_REQUIRED"
 SUNO_BROWSER_ERROR_CODE = "SUNO_BROWSER_ERROR"
 SUNO_CAPTCHA_STATUS = "captcha_required"
+TEMP_PRE_SUNO_RETRY_USER_IDS = {37}
 STYLE_PROMPT_TAG_MIN_SIMILARITY = 0.58
 STYLE_PROMPT_TAG_SIMILARITY_MARGIN = 0.08
 
@@ -562,7 +563,8 @@ class DailyStore:
                     stage = ?,
                     error = '',
                     started_at = COALESCE(started_at, ?),
-                    updated_at = ?
+                    updated_at = ?,
+                    completed_at = NULL
                 WHERE id = ?
                 """,
                 (stage, now, now, batch_id),
@@ -1800,10 +1802,15 @@ def create_daily_router(
             )
             if resume_job is None:
                 if request_body.resume:
-                    raise HTTPException(
-                        status_code=409,
-                        detail="No resumable daily job found for this user, date, and playlist.",
-                    )
+                    if owner.id not in TEMP_PRE_SUNO_RETRY_USER_IDS:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="No resumable daily job found for this user, date, and playlist.",
+                        )
+                    # Temporary user-level repair: user 37 hit a failed daily
+                    # before Suno batches existed, while the installed client
+                    # retries failed dailies as resume requests.
+                    pass
             else:
                 daily_store.mark_job_running(job_id=resume_job.id, stage="suno_queue")
                 daily_store.set_playlist_status(

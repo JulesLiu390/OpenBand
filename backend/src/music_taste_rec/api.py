@@ -145,6 +145,10 @@ def create_app(
     )
     app.state.auth_db_path = app.state.auth_store.db_path
     configured_admin_key = admin_key if admin_key is not None else os.getenv(ADMIN_KEY_ENV)
+
+    def load_model_for_app() -> StyleAssociationModel:
+        return _load_model(app.state.model_path)
+
     app.include_router(
         create_auth_router(
             app.state.auth_store,
@@ -152,7 +156,7 @@ def create_app(
             public_base_url=os.getenv(PUBLIC_BASE_URL_ENV),
         )
     )
-    app.include_router(create_me_router(app.state.auth_store))
+    app.include_router(create_me_router(app.state.auth_store, load_model=load_model_for_app))
     app.include_router(
         create_song_router(
             store=app.state.song_store,
@@ -181,9 +185,6 @@ def create_app(
         if require_auth
         else _anonymous_user
     )
-
-    def load_model_for_app() -> StyleAssociationModel:
-        return _load_model(app.state.model_path)
 
     @app.get("/health")
     def health(model: StyleAssociationModel = Depends(load_model_for_app)) -> dict[str, Any]:

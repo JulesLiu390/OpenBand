@@ -4,6 +4,7 @@ import { Platform } from "react-native";
 
 import { useAuth } from "@/components/AuthProvider";
 import { ApiError, getFreshAccessToken } from "@/lib/auth";
+import { readUserCache, writeUserCache } from "@/lib/cache";
 import { absoluteSongUrl, cacheSong, Song, SongCacheResult } from "@/lib/songs";
 
 export type PlaybackOrder = "sequence" | "shuffle";
@@ -14,6 +15,21 @@ type PlaySongOptions = {
   playlistId?: string;
   source?: PlaySongSource;
 };
+
+type CachedPlaybackState = {
+  currentIndex: number;
+  currentSong: Song | null;
+  currentTime: number;
+  duration: number;
+  playbackOrder: PlaybackOrder;
+  queue: Song[];
+  repeatMode: RepeatMode;
+  updatedAt: string;
+  wasPlaying: boolean;
+};
+
+const PLAYBACK_CACHE_NAMESPACE = "playback-state";
+const PLAYBACK_SAVE_INTERVAL_MS = 5000;
 
 type PlayerContextValue = {
   currentSong: Song | null;
@@ -57,6 +73,7 @@ export function PlayerProvider({ children }: PropsWithChildren) {
   const [repeatMode, setRepeatModeState] = useState<RepeatMode>("pause");
   const [busySongId, setBusySongId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [restoredCurrentTime, setRestoredCurrentTime] = useState(0);
   const webObjectUrlRef = useRef<string | null>(null);
   const currentSongRef = useRef<Song | null>(null);
   const queueRef = useRef<Song[]>([]);
@@ -65,6 +82,13 @@ export function PlayerProvider({ children }: PropsWithChildren) {
   const playbackOrderRef = useRef<PlaybackOrder>("sequence");
   const repeatModeRef = useRef<RepeatMode>("pause");
   const busySongIdRef = useRef<string | null>(null);
+  const restoredSongIdRef = useRef<string | null>(null);
+  const restoredCurrentTimeRef = useRef(0);
+  const restoredUserIdRef = useRef<number | null>(null);
+  const lastPlaybackSaveRef = useRef({
+    at: 0,
+    key: "",
+  });
   const shufflePlayedIdsRef = useRef<Set<string>>(new Set());
   const previousSongIdsRef = useRef<string[]>([]);
   const playNextSongIdsRef = useRef<string[]>([]);
@@ -99,6 +123,10 @@ export function PlayerProvider({ children }: PropsWithChildren) {
     busySongIdRef.current = busySongId;
   }, [busySongId]);
 
+  useEffect(() => {
+    restoredCurrentTimeRef.current = restoredCurrentTime;
+  }, [restoredCurrentTime]);
+
   const revokeWebObjectUrl = useCallback(() => {
     if (Platform.OS !== "web" || !webObjectUrlRef.current) {
       return;
@@ -129,11 +157,128 @@ export function PlayerProvider({ children }: PropsWithChildren) {
     setCurrentIndex(-1);
     setCurrentUri(null);
     setBusySongId(null);
+    setRestoredCurrentTime(0);
+    restoredCurrentTimeRef.current = 0;
+    restoredSongIdRef.current = null;
+    restoredUserIdRef.current = null;
     previousSongIdsRef.current = [];
     playNextSongIdsRef.current = [];
     shufflePlayedIdsRef.current = new Set();
     revokeWebObjectUrl();
   }, [player, revokeWebObjectUrl, session]);
+
+  useEffect(() => {
+    if (!session) {
+      return;
+    }
+    if (restoredUserIdRef.current === session.user.id) {
+      return;
+    }
+
+    let mounted = true;
+    const userId = session.user.id;
+    restoredUserIdRef.current = userId;
+
+    async function restorePlaybackState() {
+      const snapshot = await readUserCache<CachedPlaybackState>(PLAYBACK_CACHE_NAMESPACE, userId);
+      if (!mounted || !snapshot?.data) {
+        return;
+      }
+
+      const cached = snapshot.data;
+      const cachedSong = cached.currentSong;
+      if (!cachedSong) {
+        return;
+      }
+      const restoredQueue = normalizeQueue(cachedSong, cached.queue ?? []);
+      const restoredIndex = resolveCachedIndex(restoredQueue, cachedSong.id, cached.currentIndex);
+      const restoredTime = clampPlaybackTime(cached.currentTime, cached.duration || cachedSong.duration_seconds || 0);
+
+      queueRef.current = restoredQueue;
+      currentIndexRef.current = restoredIndex;
+      currentSongRef.current = cachedSong;
+      playbackOrderRef.current = cached.playbackOrder === "shuffle" ? "shuffle" : "sequence";
+      repeatModeRef.current = cached.repeatMode === "loop" ? "loop" : "pause";
+      restoredSongIdRef.current = cachedSong.id;
+      restoredCurrentTimeRef.current = restoredTime;
+
+      setQueue(restoredQueue);
+      setCurrentIndex(restoredIndex);
+      setCurrentSong(cachedSong);
+      setCurrentUri(null);
+      setPlaybackOrderState(playbackOrderRef.current);
+      setRepeatModeState(repeatModeRef.current);
+      setRestoredCurrentTime(restoredTime);
+      setError(null);
+      shufflePlayedIdsRef.current = cached.playbackOrder === "shuffle" ? new Set([cachedSong.id]) : new Set();
+      previousSongIdsRef.current = [];
+      playNextSongIdsRef.current = [];
+    }
+
+    restorePlaybackState().catch(() => {
+      // A corrupt playback snapshot should not block the rest of the app.
+    });
+
+    return () => {
+      mounted = false;
+    };
+  }, [session]);
+
+  useEffect(() => {
+    if (!session || !currentSong) {
+      return;
+    }
+
+    const now = Date.now();
+    const stateKey = playbackStateKey({
+      currentIndex,
+      currentSong,
+      playbackOrder,
+      queue,
+      repeatMode,
+    });
+    const shouldSaveImmediately = lastPlaybackSaveRef.current.key !== stateKey;
+    if (!shouldSaveImmediately && now - lastPlaybackSaveRef.current.at < PLAYBACK_SAVE_INTERVAL_MS) {
+      return;
+    }
+
+    lastPlaybackSaveRef.current = {
+      at: now,
+      key: stateKey,
+    };
+
+    const effectiveDuration = status.duration > 0 ? status.duration : (currentSong.duration_seconds ?? 0);
+    const effectiveTime = currentUri
+      ? clampPlaybackTime(status.currentTime, effectiveDuration)
+      : clampPlaybackTime(restoredCurrentTime, effectiveDuration);
+    const snapshot: CachedPlaybackState = {
+      currentIndex,
+      currentSong,
+      currentTime: effectiveTime,
+      duration: effectiveDuration,
+      playbackOrder,
+      queue,
+      repeatMode,
+      updatedAt: new Date().toISOString(),
+      wasPlaying: Boolean(status.playing),
+    };
+
+    writeUserCache(PLAYBACK_CACHE_NAMESPACE, session.user.id, snapshot).catch(() => {
+      // Playback persistence is best-effort.
+    });
+  }, [
+    currentIndex,
+    currentSong,
+    currentUri,
+    playbackOrder,
+    queue,
+    repeatMode,
+    restoredCurrentTime,
+    session,
+    status.currentTime,
+    status.duration,
+    status.playing,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -195,6 +340,7 @@ export function PlayerProvider({ children }: PropsWithChildren) {
       try {
         revokeWebObjectUrl();
         const playable = await preparePlayableSong(song, session.accessToken);
+        const resumeTime = restoredSongIdRef.current === song.id ? restoredCurrentTimeRef.current : 0;
         if (Platform.OS === "web") {
           webObjectUrlRef.current = playable.uri;
         }
@@ -213,6 +359,16 @@ export function PlayerProvider({ children }: PropsWithChildren) {
         } catch {
           // Lock screen metadata is best-effort across Expo targets.
         }
+        if (resumeTime > 0.5) {
+          try {
+            await player.seekTo(resumeTime);
+          } catch {
+            // Some platforms reject seek until metadata is ready; playback can still start.
+          }
+        }
+        restoredSongIdRef.current = null;
+        restoredCurrentTimeRef.current = 0;
+        setRestoredCurrentTime(0);
         player.play();
         return playable;
       } catch (exc) {
@@ -335,15 +491,27 @@ export function PlayerProvider({ children }: PropsWithChildren) {
   }, [nextSong, status.currentTime, status.didJustFinish, status.duration, status.isBuffering, status.playing]);
 
   const togglePlayPause = useCallback(() => {
-    if (!currentSongRef.current) {
+    const song = currentSongRef.current;
+    if (!song) {
       return;
     }
     if (status.playing) {
       player.pause();
       return;
     }
+    if (!currentUriRef.current) {
+      const nextQueue = normalizeQueue(song, queueRef.current);
+      startSong(song, {
+        index: resolveCurrentIndex(nextQueue, song.id),
+        queue: nextQueue,
+        resetShuffle: false,
+      }).catch(() => {
+        // The player error state is set by startSong.
+      });
+      return;
+    }
     player.play();
-  }, [player, status.playing]);
+  }, [player, startSong, status.playing]);
 
   const pause = useCallback(() => {
     player.pause();
@@ -351,6 +519,12 @@ export function PlayerProvider({ children }: PropsWithChildren) {
 
   const seekTo = useCallback(
     async (seconds: number) => {
+      if (!currentUriRef.current) {
+        const nextTime = Math.max(0, seconds);
+        restoredCurrentTimeRef.current = nextTime;
+        setRestoredCurrentTime(nextTime);
+        return;
+      }
       await player.seekTo(Math.max(0, seconds));
     },
     [player],
@@ -386,7 +560,11 @@ export function PlayerProvider({ children }: PropsWithChildren) {
   }, []);
 
   const duration = status.duration > 0 ? status.duration : (currentSong?.duration_seconds ?? 0);
-  const currentTime = status.currentTime > 0 ? Math.min(status.currentTime, duration || status.currentTime) : 0;
+  const currentTime = currentUri
+    ? status.currentTime > 0
+      ? Math.min(status.currentTime, duration || status.currentTime)
+      : 0
+    : clampPlaybackTime(restoredCurrentTime, duration);
 
   const value = useMemo<PlayerContextValue>(
     () => ({
@@ -550,6 +728,14 @@ function normalizeQueue(song: Song, queue: Song[]): Song[] {
   return Array.from(byId.values());
 }
 
+function resolveCachedIndex(queue: Song[], songId: string, cachedIndex: number): number {
+  const exactIndex = findSongIndex(queue, songId);
+  if (exactIndex >= 0) {
+    return exactIndex;
+  }
+  return cachedIndex >= 0 && cachedIndex < queue.length ? cachedIndex : 0;
+}
+
 function findSongIndex(queue: Song[], songId: string): number {
   return queue.findIndex((song) => song.id === songId);
 }
@@ -574,4 +760,30 @@ function unplayedShuffleSongs(queue: Song[], currentSongId: string, playedIds: S
   return queue
     .map((song, index) => ({ song, index }))
     .filter((candidate) => candidate.song.id !== currentSongId && !playedIds.has(candidate.song.id));
+}
+
+function clampPlaybackTime(seconds: number, duration: number): number {
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return 0;
+  }
+  if (!Number.isFinite(duration) || duration <= 0) {
+    return seconds;
+  }
+  return Math.min(seconds, Math.max(0, duration - 1));
+}
+
+function playbackStateKey(state: {
+  currentIndex: number;
+  currentSong: Song;
+  playbackOrder: PlaybackOrder;
+  queue: Song[];
+  repeatMode: RepeatMode;
+}): string {
+  return [
+    state.currentSong.id,
+    state.currentIndex,
+    state.playbackOrder,
+    state.repeatMode,
+    state.queue.map((song) => `${song.id}:${song.is_liked ? "1" : "0"}:${song.liked_at ?? ""}`).join(","),
+  ].join("|");
 }

@@ -2,7 +2,15 @@ import { useState } from "react";
 import { ActivityIndicator, Modal, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { usePlayer } from "@/components/PlayerProvider";
-import { addPlaylistSong, listPlaylists, removePlaylistSong, PlaylistSummary } from "@/lib/playlists";
+import { loadStoredSession } from "@/lib/auth";
+import {
+  addPlaylistSong,
+  listPlaylists,
+  loadCachedPlaylists,
+  patchCachedPlaylistLike,
+  removePlaylistSong,
+  PlaylistSummary,
+} from "@/lib/playlists";
 import { setSongLiked, Song, songTagSummary } from "@/lib/songs";
 import { theme } from "@/lib/theme";
 
@@ -58,6 +66,8 @@ export function SongActionMenu({
     setError(null);
     try {
       const result = await setSongLiked(accessToken, song.id, !isLiked);
+      const session = await loadStoredSession();
+      await patchCachedPlaylistLike(session?.user.id, song.id, result.is_liked, result.liked_at);
       await onLikeChanged?.(song.id, result.is_liked, result.liked_at);
       closeAfterAction();
     } catch (exc) {
@@ -95,6 +105,12 @@ export function SongActionMenu({
     setBusy(true);
     setError(null);
     try {
+      const session = await loadStoredSession();
+      const cached = await loadCachedPlaylists(session?.user.id);
+      if (cached) {
+        setPlaylists(cached.playlists.filter((playlist) => !playlist.is_system && playlist.id !== currentPlaylistId));
+        setMode("playlists");
+      }
       const response = await listPlaylists(accessToken);
       setPlaylists(response.playlists.filter((playlist) => !playlist.is_system && playlist.id !== currentPlaylistId));
       setMode("playlists");

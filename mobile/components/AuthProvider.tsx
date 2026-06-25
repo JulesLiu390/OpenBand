@@ -15,6 +15,7 @@ import {
   refreshAuthSession,
   saveStoredSession,
   subscribeAuthSession,
+  updateMe,
 } from "@/lib/auth";
 
 type AuthContextValue = {
@@ -24,6 +25,7 @@ type AuthContextValue = {
   isAuthenticated: boolean;
   login: (key: string, options?: { apiBaseUrl?: string }) => Promise<void>;
   logout: () => Promise<void>;
+  updateProfileName: (label: string) => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -143,6 +145,23 @@ export function AuthProvider({ children }: PropsWithChildren) {
     }
   }, [session]);
 
+  const updateProfileName = useCallback(
+    async (label: string) => {
+      const currentSession = session;
+      if (!currentSession) {
+        throw new ApiError("Missing auth session.", 401);
+      }
+      const updatedUser = await updateMe(currentSession.accessToken, { label });
+      const storedSession = await loadStoredSession();
+      const baseSession = storedSession?.user.id === updatedUser.id ? storedSession : currentSession;
+      const nextSession = { ...baseSession, user: updatedUser };
+      setSession(nextSession);
+      setUser(updatedUser);
+      await saveStoredSession(nextSession);
+    },
+    [session],
+  );
+
   const value = useMemo<AuthContextValue>(
     () => ({
       user,
@@ -151,8 +170,9 @@ export function AuthProvider({ children }: PropsWithChildren) {
       isAuthenticated: Boolean(user && session),
       login,
       logout,
+      updateProfileName,
     }),
-    [loading, login, logout, session, user],
+    [loading, login, logout, session, updateProfileName, user],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

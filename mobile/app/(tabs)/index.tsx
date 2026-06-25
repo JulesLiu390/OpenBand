@@ -14,6 +14,9 @@ import {
   generateTodayDaily,
   getTodayDaily,
   listDailyHistory,
+  loadCachedDailyHistory,
+  loadCachedDailyPlaylist,
+  loadCachedDailyToday,
 } from "@/lib/daily";
 import {
   Song,
@@ -21,13 +24,19 @@ import {
   cacheSong,
   formatDuration,
   getSongCacheStatuses,
-  listAllSongs,
+  listSongs,
+  loadSongListCache,
   loadSongCatalog,
   mergeSongCatalog,
-  saveSongCatalog,
+  saveSongListCache,
+  songListCacheKey,
   songTagSummary,
 } from "@/lib/songs";
 import { artworkPalettes, theme } from "@/lib/theme";
+
+const CATALOG_PAGE_SIZE = 50;
+const DAILY_HISTORY_PAGE_SIZE = 20;
+const CATALOG_CACHE_KEY = songListCacheKey("library");
 
 const WORKING_STATUSES = new Set([
   "queued",
@@ -74,11 +83,17 @@ export default function DailyScreen() {
   });
   const [cacheStatus, setCacheStatus] = useState<Record<string, SongCacheStatus>>({});
   const [loading, setLoading] = useState(false);
+  const [loadingHistoryMore, setLoadingHistoryMore] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tagsOpen, setTagsOpen] = useState(false);
   const [catalogSongs, setCatalogSongs] = useState<Song[]>([]);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [historyPageInfo, setHistoryPageInfo] = useState({
+    total: 0,
+    nextOffset: 0,
+    hasMore: false,
+  });
 
   const playlist = today?.playlist ?? null;
   const songs = useMemo(() => playlist?.songs.map((entry) => entry.song) ?? [], [playlist]);
@@ -110,10 +125,15 @@ export default function DailyScreen() {
       try {
         const [todayResponse, historyResponse] = await Promise.all([
           getTodayDaily(session.accessToken, options.date),
-          listDailyHistory(session.accessToken, 20),
+          listDailyHistory(session.accessToken, DAILY_HISTORY_PAGE_SIZE),
         ]);
         setToday(todayResponse);
         setHistory(historyResponse.playlists);
+        setHistoryPageInfo({
+          total: historyResponse.total,
+          nextOffset: historyResponse.offset + historyResponse.playlists.length,
+          hasMore: historyResponse.offset + historyResponse.playlists.length < historyResponse.total,
+        });
         const nextSongs = todayResponse.playlist?.songs.map((entry) => entry.song) ?? [];
         await mergeSongCatalog(session.user.id, nextSongs);
         setCatalogSongs((current) => uniqueSongsById([...current, ...nextSongs]));
@@ -130,8 +150,47 @@ export default function DailyScreen() {
   );
 
   useEffect(() => {
-    refreshDaily({ showSpinner: true });
-  }, [refreshDaily]);
+    let mounted = true;
+
+    async function restoreAndRefreshDaily() {
+      if (!session) {
+        setToday(null);
+        setHistory([]);
+        setHistoryPageInfo({ total: 0, nextOffset: 0, hasMore: false });
+        return;
+      }
+
+      const [cachedToday, cachedHistory] = await Promise.all([
+        loadCachedDailyToday(session.user.id),
+        loadCachedDailyHistory(session.user.id),
+      ]);
+      if (!mounted) {
+        return;
+      }
+      if (cachedToday) {
+        setToday(cachedToday);
+        const cachedSongs = cachedToday.playlist?.songs.map((entry) => entry.song) ?? [];
+        if (cachedSongs.length) {
+          setCacheStatus(await getSongCacheStatuses(cachedSongs));
+        }
+      }
+      if (cachedHistory) {
+        setHistory(cachedHistory.playlists);
+        setHistoryPageInfo({
+          total: cachedHistory.total,
+          nextOffset: cachedHistory.nextOffset,
+          hasMore: cachedHistory.hasMore,
+        });
+      }
+      await refreshDaily({ showSpinner: !cachedToday && !cachedHistory });
+    }
+
+    restoreAndRefreshDaily();
+
+    return () => {
+      mounted = false;
+    };
+  }, [refreshDaily, session]);
 
   useEffect(() => {
     if (!session) {
@@ -142,15 +201,19 @@ export default function DailyScreen() {
     let mounted = true;
 
     async function loadExistingSongs() {
-      const cachedSongs = await loadSongCatalog(activeSession.user.id);
+      const [cachedList, cachedCatalogSongs] = await Promise.all([
+        loadSongListCache(activeSession.user.id, CATALOG_CACHE_KEY),
+        loadSongCatalog(activeSession.user.id),
+      ]);
+      const cachedSongs = cachedList?.songs.length ? cachedList.songs : cachedCatalogSongs;
       if (mounted && cachedSongs.length) {
         setCatalogSongs((current) => uniqueSongsById([...current, ...cachedSongs]));
       }
       try {
-        const response = await listAllSongs(activeSession.accessToken);
-        await saveSongCatalog(activeSession.user.id, response.songs);
+        const response = await listSongs(activeSession.accessToken, CATALOG_PAGE_SIZE, 0);
+        const cached = await saveSongListCache(activeSession.user.id, CATALOG_CACHE_KEY, response);
         if (mounted) {
-          setCatalogSongs((current) => uniqueSongsById([...current, ...response.songs]));
+          setCatalogSongs((current) => uniqueSongsById([...current, ...cached.songs]));
         }
       } catch {
         // The cached catalog is enough for the tag view when the network is unavailable.
@@ -216,6 +279,20 @@ export default function DailyScreen() {
     setLoading(true);
     setError(null);
     try {
+      const [cachedToday, cachedPlaylist] = await Promise.all([
+        loadCachedDailyToday(session.user.id, item.date),
+        loadCachedDailyPlaylist(session.user.id, item.date),
+      ]);
+      if (cachedToday) {
+        setToday(cachedToday);
+      } else if (cachedPlaylist) {
+        setToday({
+          date: cachedPlaylist.date,
+          status: cachedPlaylist.status,
+          playlist: cachedPlaylist,
+          active_job: null,
+        });
+      }
       const response = await getTodayDaily(session.accessToken, item.date);
       setToday(response);
       const nextSongs = response.playlist?.songs.map((entry) => entry.song) ?? [];
@@ -226,6 +303,29 @@ export default function DailyScreen() {
       setError(exc instanceof Error ? exc.message : "Daily date could not load.");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function loadMoreHistory() {
+    if (!session || loading || loadingHistoryMore || !historyPageInfo.hasMore) {
+      return;
+    }
+    setLoadingHistoryMore(true);
+    setError(null);
+    try {
+      const response = await listDailyHistory(session.accessToken, DAILY_HISTORY_PAGE_SIZE, historyPageInfo.nextOffset);
+      const nextHistory = mergeDailyHistory(history, response.playlists);
+      setHistory(nextHistory);
+      const nextOffset = Math.max(response.offset + response.playlists.length, nextHistory.length);
+      setHistoryPageInfo({
+        total: response.total,
+        nextOffset,
+        hasMore: nextOffset < response.total,
+      });
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : "History could not load.");
+    } finally {
+      setLoadingHistoryMore(false);
     }
   }
 
@@ -307,7 +407,10 @@ export default function DailyScreen() {
   const generateDisabled = generating || isWorking || loading;
 
   return (
-    <MusicPage playerTitle={selectedTrack.title} playerSubtitle={selectedTrack.subtitle}>
+    <MusicPage
+      onEndReached={historyPageInfo.hasMore ? loadMoreHistory : undefined}
+      playerTitle={selectedTrack.title}
+      playerSubtitle={selectedTrack.subtitle}>
       <Section>
         <Text style={styles.eyebrow}>{today?.date ?? "Today"}</Text>
         <Text style={styles.title}>Daily</Text>
@@ -470,6 +573,7 @@ export default function DailyScreen() {
               </Pressable>
             ))}
           </View>
+          {loadingHistoryMore ? <Text style={styles.loadingMoreText}>Loading more history</Text> : null}
         </Section>
       ) : null}
 
@@ -667,6 +771,17 @@ function buildDailyTimeline(history: DailyPlaylistSummary[], selected: DailyToda
         playlist,
       };
     });
+}
+
+function mergeDailyHistory(
+  current: DailyPlaylistSummary[],
+  incoming: DailyPlaylistSummary[],
+): DailyPlaylistSummary[] {
+  const byDate = new Map<string, DailyPlaylistSummary>();
+  for (const item of [...current, ...incoming]) {
+    byDate.set(item.date, item);
+  }
+  return Array.from(byDate.values()).sort((left, right) => right.date.localeCompare(left.date));
 }
 
 function dailyDateMeta(item: DailyDateItem): string {
@@ -900,6 +1015,12 @@ const styles = StyleSheet.create({
   historyCardActive: {
     backgroundColor: theme.colors.tintSoft,
     borderColor: theme.colors.tint,
+  },
+  loadingMoreText: {
+    color: theme.colors.tertiaryText,
+    fontSize: 12,
+    fontWeight: "900",
+    textAlign: "center",
   },
   historyDate: {
     color: theme.colors.text,

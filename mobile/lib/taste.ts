@@ -1,8 +1,14 @@
-import { ApiError, authFetch } from "@/lib/auth";
+import { ApiError, authFetch, loadStoredSession } from "@/lib/auth";
+import { readUserCache, writeUserCache } from "@/lib/cache";
 
 export type MusicTagsResponse = {
   tags: string[];
   updated_at: string | null;
+};
+
+export type MusicTagCatalogResponse = {
+  tags: string[];
+  total: number;
 };
 
 export type MusicProfileRequest = {
@@ -39,7 +45,19 @@ export function subscribeMusicTags(listener: MusicTagsListener): () => void {
 export async function getMusicTags(accessToken: string): Promise<MusicTagsResponse> {
   const response = await authFetch("/v1/me/music-tags", accessToken);
   await assertOk(response);
-  return (await response.json()) as MusicTagsResponse;
+  const body = (await response.json()) as MusicTagsResponse;
+  const session = await loadStoredSession();
+  await saveCachedMusicTags(session?.user.id, body);
+  return body;
+}
+
+export async function getMusicTagCatalog(accessToken: string): Promise<MusicTagCatalogResponse> {
+  const response = await authFetch("/v1/me/music-tags/catalog", accessToken);
+  await assertOk(response);
+  const body = (await response.json()) as MusicTagCatalogResponse;
+  const session = await loadStoredSession();
+  await saveCachedMusicTagCatalog(session?.user.id, body);
+  return body;
 }
 
 export async function setMusicTags(accessToken: string, tags: string[]): Promise<MusicTagsResponse> {
@@ -52,6 +70,8 @@ export async function setMusicTags(accessToken: string, tags: string[]): Promise
   });
   await assertOk(response);
   const body = (await response.json()) as MusicTagsResponse;
+  const session = await loadStoredSession();
+  await saveCachedMusicTags(session?.user.id, body);
   notifyMusicTags(body);
   return body;
 }
@@ -70,9 +90,39 @@ export async function generateMusicProfile(
   await assertOk(response);
   const body = (await response.json()) as MusicProfileResponse;
   if (request.save !== false) {
+    const session = await loadStoredSession();
+    await saveCachedMusicTags(session?.user.id, body);
     notifyMusicTags(body);
   }
   return body;
+}
+
+export async function loadCachedMusicTags(
+  userId: number | null | undefined,
+): Promise<MusicTagsResponse | null> {
+  const snapshot = await readUserCache<MusicTagsResponse>("music-tags", userId);
+  return snapshot?.data ?? null;
+}
+
+export async function loadCachedMusicTagCatalog(
+  userId: number | null | undefined,
+): Promise<MusicTagCatalogResponse | null> {
+  const snapshot = await readUserCache<MusicTagCatalogResponse>("music-tag-catalog", userId);
+  return snapshot?.data ?? null;
+}
+
+export async function saveCachedMusicTags(
+  userId: number | null | undefined,
+  response: MusicTagsResponse,
+): Promise<void> {
+  await writeUserCache("music-tags", userId, response);
+}
+
+export async function saveCachedMusicTagCatalog(
+  userId: number | null | undefined,
+  response: MusicTagCatalogResponse,
+): Promise<void> {
+  await writeUserCache("music-tag-catalog", userId, response);
 }
 
 function notifyMusicTags(response: MusicTagsResponse): void {

@@ -7,7 +7,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Callable
 from urllib.parse import urlencode, urlparse
 
 import qrcode
@@ -78,6 +78,10 @@ class LogoutRequest(BaseModel):
     refresh_token: str | None = None
 
 
+class UpdateMeRequest(BaseModel):
+    label: str = Field(min_length=1, max_length=120)
+
+
 class MusicTagsRequest(BaseModel):
     tags: list[str] = Field(default_factory=list, max_length=200)
 
@@ -85,6 +89,11 @@ class MusicTagsRequest(BaseModel):
 class MusicTagsResponse(BaseModel):
     tags: list[str]
     updated_at: str | None = None
+
+
+class MusicTagCatalogResponse(BaseModel):
+    tags: list[str]
+    total: int
 
 
 class AuthStore:
@@ -229,6 +238,24 @@ class AuthStore:
                 """,
                 (utc_now(), hash_secret(refresh_token, "refresh")),
             )
+
+    def update_user_label(self, user_id: int, label: str) -> AuthUser:
+        clean_label = label.strip()
+        if not clean_label:
+            raise ValueError("Profile name is required.")
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE users
+                SET label = ?
+                WHERE id = ? AND disabled_at IS NULL
+                """,
+                (clean_label, user_id),
+            )
+            user = self._get_user(conn, user_id)
+        if user is None:
+            raise AuthError("User not found.")
+        return user
 
     def get_music_tags(self, user_id: int) -> MusicTagsResponse:
         with self._connect() as conn:
@@ -427,13 +454,26 @@ def create_auth_router(
     return router
 
 
-def create_me_router(store: AuthStore) -> APIRouter:
+def create_me_router(
+    store: AuthStore,
+    load_model: Callable[[], Any] | None = None,
+) -> APIRouter:
     router = APIRouter(prefix="/v1/me", tags=["me"])
     current_user = current_user_dependency(store)
 
     @router.get("")
     def me(user: AuthUser = Depends(current_user)) -> dict[str, Any]:
         return {"user": auth_user_dict(user)}
+
+    @router.patch("")
+    def update_me(request: UpdateMeRequest, user: AuthUser = Depends(current_user)) -> dict[str, Any]:
+        try:
+            updated_user = store.update_user_label(user.id, request.label)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except AuthError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"user": auth_user_dict(updated_user)}
 
     @router.post("/logout")
     def logout(request: LogoutRequest, _user: AuthUser = Depends(current_user)) -> dict[str, str]:
@@ -451,6 +491,14 @@ def create_me_router(store: AuthStore) -> APIRouter:
         user: AuthUser = Depends(current_user),
     ) -> MusicTagsResponse:
         return store.set_music_tags(user.id, request.tags)
+
+    @router.get("/music-tags/catalog", response_model=MusicTagCatalogResponse)
+    def get_music_tag_catalog(_user: AuthUser = Depends(current_user)) -> MusicTagCatalogResponse:
+        if load_model is None:
+            raise HTTPException(status_code=503, detail="Music tag model is not configured.")
+        model = load_model()
+        tags = sorted(model.tags)
+        return MusicTagCatalogResponse(tags=tags, total=len(tags))
 
     return router
 

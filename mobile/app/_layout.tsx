@@ -60,6 +60,8 @@ function RootLayoutNav() {
         <Stack.Screen name="onboarding" options={{ headerShown: false }} />
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="player" options={{ headerShown: false }} />
+        <Stack.Screen name="search" options={{ headerShown: false }} />
+        <Stack.Screen name="taste-tags" options={{ headerShown: false }} />
       </Stack>
     </ThemeProvider>
   );

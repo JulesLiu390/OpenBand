@@ -1,9 +1,8 @@
 import { useEffect, useState } from "react";
-import { Image, Platform, StyleSheet } from "react-native";
+import { Image, StyleSheet } from "react-native";
 
 import { AlbumArt } from "@/components/AlbumArt";
-import { getFreshAccessToken } from "@/lib/auth";
-import { absoluteSongUrl, cacheSongCover, Song } from "@/lib/songs";
+import { cacheSongCover, getCachedSongCoverUri, Song } from "@/lib/songs";
 import { artworkPalettes } from "@/lib/theme";
 
 type Props = {
@@ -21,54 +20,31 @@ export function SongArtwork({ song, accessToken, colors = artworkPalettes[0], si
     setFailed(false);
     setImageUri(null);
 
-    const currentSong = song;
-    const coverUrl = currentSong?.cover_url;
-    if (!currentSong || !coverUrl || !accessToken) {
+    if (!song?.cover_url) {
       return;
     }
 
+    const currentSong: Song = song;
     const currentAccessToken = accessToken;
-    const resolvedCoverUrl: string = coverUrl;
     let cancelled = false;
-    let objectUrl: string | null = null;
 
-    if (Platform.OS !== "web") {
-      cacheSongCover(currentSong, currentAccessToken)
-        .then((result) => {
-          if (!cancelled && result?.uri) {
-            setImageUri(result.uri);
-          }
-        })
-        .catch(() => {
-          if (!cancelled) {
-            setFailed(true);
-          }
-        });
-
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    async function loadWebCover() {
+    async function loadCover() {
       try {
-        const freshAccessToken = await getFreshAccessToken(currentAccessToken);
-        const response = await fetch(absoluteSongUrl(resolvedCoverUrl), {
-          headers: {
-            Authorization: `Bearer ${freshAccessToken}`,
-          },
-        });
-        if (!response.ok) {
-          throw new Error(`Cover failed with status ${response.status}.`);
-        }
-        const blob = await response.blob();
-        const nextObjectUrl = URL.createObjectURL(blob);
+        const cachedUri = await getCachedSongCoverUri(currentSong);
         if (cancelled) {
-          URL.revokeObjectURL(nextObjectUrl);
           return;
         }
-        objectUrl = nextObjectUrl;
-        setImageUri(nextObjectUrl);
+        if (cachedUri) {
+          setImageUri(cachedUri);
+          return;
+        }
+        if (!currentAccessToken) {
+          return;
+        }
+        const result = await cacheSongCover(currentSong, currentAccessToken);
+        if (!cancelled && result?.uri) {
+          setImageUri(result.uri);
+        }
       } catch {
         if (!cancelled) {
           setFailed(true);
@@ -76,15 +52,12 @@ export function SongArtwork({ song, accessToken, colors = artworkPalettes[0], si
       }
     }
 
-    loadWebCover();
+    loadCover();
 
     return () => {
       cancelled = true;
-      if (objectUrl) {
-        URL.revokeObjectURL(objectUrl);
-      }
     };
-  }, [accessToken, song, song?.cover_url, song?.file_sha256, song?.id]);
+  }, [accessToken, song?.cover_url, song?.id]);
 
   const source = imageUri && !failed ? { uri: imageUri } : null;
 

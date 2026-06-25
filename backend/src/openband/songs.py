@@ -26,6 +26,28 @@ LIKED_PLAYLIST_ID = "playlist_liked_music"
 LIKED_PLAYLIST_NAME = "Liked Music"
 LIKED_PLAYLIST_DESCRIPTION = "Songs you have liked"
 SYSTEM_PLAYLIST_TIMESTAMP = "1970-01-01T00:00:00Z"
+PLAYLIST_EFFECTIVE_COVER_SQL = """
+COALESCE(
+    (
+        SELECT playlist_songs.song_id
+        FROM playlist_songs
+        JOIN songs ON songs.id = playlist_songs.song_id
+        WHERE playlist_songs.playlist_id = playlists.id
+          AND playlist_songs.song_id = playlists.cover_song_id
+          AND songs.deleted_at IS NULL
+        LIMIT 1
+    ),
+    (
+        SELECT playlist_songs.song_id
+        FROM playlist_songs
+        JOIN songs ON songs.id = playlist_songs.song_id
+        WHERE playlist_songs.playlist_id = playlists.id
+          AND songs.deleted_at IS NULL
+        ORDER BY playlist_songs.position ASC, datetime(playlist_songs.added_at) ASC, playlist_songs.song_id ASC
+        LIMIT 1
+    )
+) AS effective_cover_song_id
+"""
 
 
 @dataclass(frozen=True)
@@ -62,6 +84,7 @@ class StoredPlaylist:
     song_count: int
     created_at: str
     updated_at: str
+    cover_song_id: str | None = None
     kind: str = "user"
     is_system: bool = False
 
@@ -112,6 +135,12 @@ class CreatePlaylistRequest(BaseModel):
     description: str = Field(default="", max_length=500)
 
 
+class UpdatePlaylistRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=500)
+    cover_song_id: str | None = Field(default=None, max_length=120)
+
+
 class AddPlaylistSongRequest(BaseModel):
     song_id: str = Field(min_length=1, max_length=120)
 
@@ -121,6 +150,7 @@ class PlaylistResponse(BaseModel):
     name: str
     description: str
     song_count: int
+    cover_song_id: str | None = None
     kind: str = "user"
     is_system: bool = False
     can_delete: bool = True
@@ -314,14 +344,33 @@ class SongStore:
         limit: int = 50,
         offset: int = 0,
         tag: str | None = None,
+        q: str | None = None,
     ) -> tuple[list[StoredSong], int]:
         clean_tags = _clean_song_tags([tag]) if tag else []
         clean_tag = clean_tags[0] if clean_tags else None
+        query = (q or "").strip()
         where = "WHERE songs.deleted_at IS NULL"
         params: list[Any] = []
         if clean_tag:
             where += " AND EXISTS (SELECT 1 FROM song_tags WHERE song_tags.song_id = songs.id AND tag = ?)"
             params.append(clean_tag)
+        if query:
+            like_query = _like_pattern(query)
+            where += """
+                AND (
+                    songs.title LIKE ? ESCAPE '\\' COLLATE NOCASE
+                    OR songs.artist LIKE ? ESCAPE '\\' COLLATE NOCASE
+                    OR songs.album LIKE ? ESCAPE '\\' COLLATE NOCASE
+                    OR songs.original_filename LIKE ? ESCAPE '\\' COLLATE NOCASE
+                    OR EXISTS (
+                        SELECT 1
+                        FROM song_tags
+                        WHERE song_tags.song_id = songs.id
+                          AND song_tags.tag LIKE ? ESCAPE '\\' COLLATE NOCASE
+                    )
+                )
+            """
+            params.extend([like_query, like_query, like_query, like_query, like_query])
 
         with self._connect() as conn:
             total = int(
@@ -473,8 +522,8 @@ class SongStore:
         with self._connect() as conn:
             liked_playlist = self._liked_playlist(conn, user_id)
             rows = conn.execute(
-                """
-                SELECT playlists.*, COUNT(playlist_songs.song_id) AS song_count
+                f"""
+                SELECT playlists.*, COUNT(playlist_songs.song_id) AS song_count, {PLAYLIST_EFFECTIVE_COVER_SQL}
                 FROM playlists
                 LEFT JOIN playlist_songs ON playlist_songs.playlist_id = playlists.id
                 WHERE playlists.user_id = ? AND playlists.deleted_at IS NULL
@@ -485,6 +534,53 @@ class SongStore:
             ).fetchall()
         playlists = [liked_playlist, *[playlist_from_row(row) for row in rows]]
         return playlists, len(playlists)
+
+    def update_playlist(
+        self,
+        *,
+        user_id: int,
+        playlist_id: str,
+        name: str | None = None,
+        description: str | None = None,
+        cover_song_id: str | None = None,
+        update_cover_song_id: bool = False,
+    ) -> tuple[StoredPlaylist, list[StoredSong]]:
+        if playlist_id == LIKED_PLAYLIST_ID:
+            raise ValueError("System playlists cannot be edited.")
+
+        now = utc_now()
+        updates: list[str] = []
+        params: list[Any] = []
+        with self._connect() as conn:
+            if self._get_playlist(conn, user_id, playlist_id) is None:
+                raise KeyError(playlist_id)
+            if name is not None:
+                clean_name = name.strip()
+                if not clean_name:
+                    raise ValueError("Playlist name is required.")
+                updates.append("name = ?")
+                params.append(clean_name)
+            if description is not None:
+                updates.append("description = ?")
+                params.append(description.strip())
+            if update_cover_song_id:
+                if cover_song_id is not None and not self._playlist_has_song(conn, playlist_id, cover_song_id):
+                    raise KeyError(cover_song_id)
+                updates.append("cover_song_id = ?")
+                params.append(cover_song_id)
+            if updates:
+                updates.append("updated_at = ?")
+                params.append(now)
+                params.extend([playlist_id, user_id])
+                conn.execute(
+                    f"""
+                    UPDATE playlists
+                    SET {", ".join(updates)}
+                    WHERE id = ? AND user_id = ? AND deleted_at IS NULL
+                    """,
+                    params,
+                )
+        return self.get_playlist_detail(user_id=user_id, playlist_id=playlist_id)
 
     def get_playlist_detail(self, *, user_id: int, playlist_id: str) -> tuple[StoredPlaylist, list[StoredSong]]:
         with self._connect() as conn:
@@ -559,8 +655,13 @@ class SongStore:
                 (playlist_id, song_id),
             )
             conn.execute(
-                "UPDATE playlists SET updated_at = ? WHERE id = ?",
-                (now, playlist_id),
+                """
+                UPDATE playlists
+                SET updated_at = ?,
+                    cover_song_id = CASE WHEN cover_song_id = ? THEN NULL ELSE cover_song_id END
+                WHERE id = ?
+                """,
+                (now, song_id, playlist_id),
             )
         return self.get_playlist_detail(user_id=user_id, playlist_id=playlist_id)
 
@@ -587,6 +688,7 @@ class SongStore:
             song_count=int(row["song_count"]),
             created_at=created_at,
             updated_at=updated_at,
+            cover_song_id=self._liked_playlist_cover_song_id(conn, user_id),
             kind="liked",
             is_system=True,
         )
@@ -652,10 +754,38 @@ class SongStore:
         ).fetchone()
         return row is not None
 
-    def _get_playlist(self, conn: sqlite3.Connection, user_id: int, playlist_id: str) -> StoredPlaylist | None:
+    def _playlist_has_song(self, conn: sqlite3.Connection, playlist_id: str, song_id: str) -> bool:
         row = conn.execute(
             """
-            SELECT playlists.*, COUNT(playlist_songs.song_id) AS song_count
+            SELECT 1
+            FROM playlist_songs
+            JOIN songs ON songs.id = playlist_songs.song_id
+            WHERE playlist_songs.playlist_id = ?
+              AND playlist_songs.song_id = ?
+              AND songs.deleted_at IS NULL
+            """,
+            (playlist_id, song_id),
+        ).fetchone()
+        return row is not None
+
+    def _liked_playlist_cover_song_id(self, conn: sqlite3.Connection, user_id: int) -> str | None:
+        row = conn.execute(
+            """
+            SELECT songs.id
+            FROM user_liked_songs
+            JOIN songs ON songs.id = user_liked_songs.song_id
+            WHERE user_liked_songs.user_id = ? AND songs.deleted_at IS NULL
+            ORDER BY datetime(user_liked_songs.liked_at) DESC, songs.id DESC
+            LIMIT 1
+            """,
+            (user_id,),
+        ).fetchone()
+        return row["id"] if row is not None else None
+
+    def _get_playlist(self, conn: sqlite3.Connection, user_id: int, playlist_id: str) -> StoredPlaylist | None:
+        row = conn.execute(
+            f"""
+            SELECT playlists.*, COUNT(playlist_songs.song_id) AS song_count, {PLAYLIST_EFFECTIVE_COVER_SQL}
             FROM playlists
             LEFT JOIN playlist_songs ON playlist_songs.playlist_id = playlists.id
             WHERE playlists.user_id = ? AND playlists.id = ? AND playlists.deleted_at IS NULL
@@ -723,6 +853,7 @@ class SongStore:
                     user_id INTEGER NOT NULL,
                     name TEXT NOT NULL,
                     description TEXT NOT NULL DEFAULT '',
+                    cover_song_id TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     deleted_at TEXT,
@@ -746,6 +877,9 @@ class SongStore:
                 ON playlist_songs(playlist_id, position);
                 """
             )
+            playlist_columns = {row["name"] for row in conn.execute("PRAGMA table_info(playlists)").fetchall()}
+            if "cover_song_id" not in playlist_columns:
+                conn.execute("ALTER TABLE playlists ADD COLUMN cover_song_id TEXT")
 
 
 def create_song_router(
@@ -793,9 +927,10 @@ def create_song_router(
         limit: int = Query(default=50, ge=1, le=200),
         offset: int = Query(default=0, ge=0),
         tag: str | None = Query(default=None, min_length=1, max_length=120),
+        q: str | None = Query(default=None, min_length=1, max_length=120),
         user: AuthUser | None = Depends(current_user),
     ) -> SongListResponse:
-        songs, total = store.list_songs(limit=limit, offset=offset, tag=tag)
+        songs, total = store.list_songs(limit=limit, offset=offset, tag=tag, q=q)
         return song_list_response(store=store, songs=songs, total=total, limit=limit, offset=offset, user=user)
 
     @router.get("/daily", response_model=SongListResponse)
@@ -955,6 +1090,28 @@ def create_playlist_router(
             total=total,
         )
 
+    @router.patch("/{playlist_id}", response_model=PlaylistDetailResponse)
+    def update_playlist(
+        playlist_id: str,
+        request: UpdatePlaylistRequest,
+        user: AuthUser | None = Depends(current_user),
+    ) -> PlaylistDetailResponse:
+        owner = require_user(user)
+        try:
+            playlist, songs = store.update_playlist(
+                user_id=owner.id,
+                playlist_id=playlist_id,
+                name=request.name,
+                description=request.description,
+                cover_song_id=request.cover_song_id,
+                update_cover_song_id="cover_song_id" in request.model_fields_set,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Playlist or cover song not found.") from exc
+        return playlist_detail_response(store=store, playlist=playlist, songs=songs, user=owner)
+
     @router.get("/{playlist_id}", response_model=PlaylistDetailResponse)
     def get_playlist(
         playlist_id: str,
@@ -1052,6 +1209,12 @@ def song_like_response(like: SongLike) -> SongLikeResponse:
 
 
 def playlist_from_row(row: sqlite3.Row) -> StoredPlaylist:
+    keys = set(row.keys())
+    cover_song_id = None
+    if "effective_cover_song_id" in keys:
+        cover_song_id = row["effective_cover_song_id"]
+    elif "cover_song_id" in keys:
+        cover_song_id = row["cover_song_id"]
     return StoredPlaylist(
         id=row["id"],
         user_id=int(row["user_id"]),
@@ -1060,6 +1223,7 @@ def playlist_from_row(row: sqlite3.Row) -> StoredPlaylist:
         song_count=int(row["song_count"]),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        cover_song_id=cover_song_id,
     )
 
 
@@ -1069,6 +1233,7 @@ def playlist_response(playlist: StoredPlaylist) -> PlaylistResponse:
         name=playlist.name,
         description=playlist.description,
         song_count=playlist.song_count,
+        cover_song_id=playlist.cover_song_id,
         kind=playlist.kind,
         is_system=playlist.is_system,
         can_delete=not playlist.is_system,
@@ -1097,6 +1262,11 @@ def utc_now() -> str:
 
 def _clean_song_tags(tags: str | list[str]) -> list[str]:
     return list(dict.fromkeys(parse_style_tags(tags)))
+
+
+def _like_pattern(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
 
 
 def extract_mp3_cover(path: Path) -> Mp3Cover | None:

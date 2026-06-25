@@ -1,6 +1,6 @@
 import { useFocusEffect } from "expo-router";
 import { useCallback, useMemo, useState } from "react";
-import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 
 import { AlbumArt } from "@/components/AlbumArt";
 import { Section } from "@/components/AppShell";
@@ -13,20 +13,29 @@ import {
   createPlaylist,
   getPlaylist,
   listPlaylists,
+  loadCachedPlaylistDetail,
+  loadCachedPlaylists,
   PlaylistDetail,
   PlaylistSummary,
+  updatePlaylist,
 } from "@/lib/playlists";
 import {
   Song,
   SongCacheStatus,
   cacheSong,
   getSongCacheStatuses,
-  listAllSongs,
+  listSongs,
+  loadSongListCache,
   loadCachedSongs,
   mergeSongCatalog,
+  saveSongListCache,
+  songListCacheKey,
   songTagSummary,
 } from "@/lib/songs";
 import { artworkPalettes, theme } from "@/lib/theme";
+
+const CATALOG_PAGE_SIZE = 50;
+const CATALOG_CACHE_KEY = songListCacheKey("library");
 
 export default function PlaylistsScreen() {
   const { session } = useAuth();
@@ -34,11 +43,22 @@ export default function PlaylistsScreen() {
   const [catalogSongs, setCatalogSongs] = useState<Song[]>([]);
   const [createOpen, setCreateOpen] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [editingPlaylist, setEditingPlaylist] = useState<PlaylistDetail | null>(null);
+  const [editCoverSongId, setEditCoverSongId] = useState<string | null>(null);
+  const [editError, setEditError] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
   const [loading, setLoading] = useState(false);
+  const [loadingCatalogMore, setLoadingCatalogMore] = useState(false);
   const [newName, setNewName] = useState("");
   const [playlists, setPlaylists] = useState<PlaylistSummary[]>([]);
+  const [savingEdit, setSavingEdit] = useState(false);
   const [selectedPlaylist, setSelectedPlaylist] = useState<PlaylistDetail | null>(null);
   const [cacheStatus, setCacheStatus] = useState<Record<string, SongCacheStatus>>({});
+  const [catalogPageInfo, setCatalogPageInfo] = useState({
+    total: 0,
+    nextOffset: 0,
+    hasMore: false,
+  });
 
   const selectedPlaylistId = selectedPlaylist?.id;
 
@@ -56,10 +76,35 @@ export default function PlaylistsScreen() {
           return;
         }
         setLoading(true);
+        const cachedPlaylists = await loadCachedPlaylists(session.user.id);
+        const cachedCatalog = await loadSongListCache(session.user.id, CATALOG_CACHE_KEY);
+        const cachedSelected = selectedPlaylistId
+          ? await loadCachedPlaylistDetail(session.user.id, selectedPlaylistId)
+          : null;
+        if (mounted) {
+          if (cachedPlaylists) {
+            setPlaylists(cachedPlaylists.playlists);
+          }
+          if (cachedCatalog) {
+            setCatalogSongs(cachedCatalog.songs);
+            setCatalogPageInfo({
+              total: cachedCatalog.total,
+              nextOffset: cachedCatalog.nextOffset,
+              hasMore: cachedCatalog.hasMore,
+            });
+          }
+          if (cachedSelected) {
+            setSelectedPlaylist(cachedSelected);
+          }
+          const statusSongs = [...(cachedCatalog?.songs ?? []), ...(cachedSelected?.songs ?? [])];
+          if (statusSongs.length) {
+            setCacheStatus(await getSongCacheStatuses(statusSongs));
+          }
+        }
         try {
           const [playlistResponse, songResponse] = await Promise.all([
             listPlaylists(session.accessToken),
-            listAllSongs(session.accessToken),
+            listSongs(session.accessToken, CATALOG_PAGE_SIZE, 0),
           ]);
           if (!mounted) {
             return;
@@ -69,23 +114,36 @@ export default function PlaylistsScreen() {
             : undefined;
           const nextSelectedDetail = nextSelected ? await getPlaylist(session.accessToken, nextSelected.id) : null;
           const statusSongs = [...songResponse.songs, ...(nextSelectedDetail?.songs ?? [])];
+          const cachedSongList = await saveSongListCache(session.user.id, CATALOG_CACHE_KEY, songResponse);
           await mergeSongCatalog(session.user.id, statusSongs);
           const statuses = await getSongCacheStatuses(statusSongs);
           if (!mounted) {
             return;
           }
-          setCatalogSongs(songResponse.songs);
+          setCatalogSongs(cachedSongList.songs);
+          setCatalogPageInfo({
+            total: cachedSongList.total,
+            nextOffset: cachedSongList.nextOffset,
+            hasMore: cachedSongList.hasMore,
+          });
           setPlaylists(playlistResponse.playlists);
           setSelectedPlaylist(nextSelectedDetail);
           setCacheStatus(statuses);
         } catch {
-          const cachedSongs = session ? await loadCachedSongs(session.user.id) : [];
-          const statuses = await getSongCacheStatuses(cachedSongs);
-          if (mounted) {
-            setCatalogSongs(cachedSongs);
-            setPlaylists([]);
-            setSelectedPlaylist(null);
-            setCacheStatus(statuses);
+          if (!cachedPlaylists && !cachedCatalog) {
+            const cachedSongs = session ? await loadCachedSongs(session.user.id) : [];
+            const statuses = await getSongCacheStatuses(cachedSongs);
+            if (mounted) {
+              setCatalogSongs(cachedSongs);
+              setPlaylists([]);
+              setSelectedPlaylist(null);
+              setCacheStatus(statuses);
+              setCatalogPageInfo({
+                total: cachedSongs.length,
+                nextOffset: cachedSongs.length,
+                hasMore: false,
+              });
+            }
           }
         } finally {
           if (mounted) {
@@ -106,6 +164,11 @@ export default function PlaylistsScreen() {
     const selectedIds = new Set(selectedPlaylist?.songs.map((song) => song.id) ?? []);
     return catalogSongs.filter((song) => !selectedIds.has(song.id)).slice(0, 8);
   }, [catalogSongs, selectedPlaylist]);
+  const catalogSongById = useMemo(() => new Map(catalogSongs.map((song) => [song.id, song])), [catalogSongs]);
+  const selectedCoverSong = useMemo(
+    () => (selectedPlaylist ? playlistDetailCoverSong(selectedPlaylist) : null),
+    [selectedPlaylist],
+  );
 
   async function refreshPlaylists(selectedId?: string) {
     if (!session) {
@@ -143,6 +206,59 @@ export default function PlaylistsScreen() {
     }
   }
 
+  async function openPlaylistEditor(playlist: PlaylistSummary | PlaylistDetail) {
+    if (!session || playlist.is_system) {
+      return;
+    }
+    setEditError(null);
+    let detail: PlaylistDetail | null = selectedPlaylist?.id === playlist.id ? selectedPlaylist : null;
+    if (!detail) {
+      detail = await loadCachedPlaylistDetail(session.user.id, playlist.id);
+    }
+    if (!detail) {
+      detail = await getPlaylist(session.accessToken, playlist.id);
+    }
+    setEditingPlaylist(detail);
+    setEditName(detail.name);
+    setEditCoverSongId(playlistDetailCoverSong(detail)?.id ?? null);
+  }
+
+  function closePlaylistEditor() {
+    if (savingEdit) {
+      return;
+    }
+    setEditingPlaylist(null);
+    setEditCoverSongId(null);
+    setEditError(null);
+    setEditName("");
+  }
+
+  async function submitPlaylistEdit() {
+    const target = editingPlaylist;
+    const name = editName.trim();
+    if (!session || !target || !name || savingEdit) {
+      return;
+    }
+    setSavingEdit(true);
+    setEditError(null);
+    try {
+      const detail = await updatePlaylist(session.accessToken, target.id, {
+        name,
+        cover_song_id: editCoverSongId,
+      });
+      setSelectedPlaylist(detail);
+      setPlaylists((current) => current.map((playlist) => (playlist.id === detail.id ? detail : playlist)));
+      setEditingPlaylist(null);
+      setEditName("");
+      setEditCoverSongId(null);
+      await refreshPlaylists(detail.id).catch(() => undefined);
+    } catch (exc) {
+      setEditError(exc instanceof Error ? exc.message : "Playlist could not be updated.");
+    } finally {
+      setSavingEdit(false);
+    }
+  }
+
   async function selectPlaylist(playlist: PlaylistSummary) {
     if (selectedPlaylist?.id === playlist.id) {
       setSelectedPlaylist(null);
@@ -151,11 +267,40 @@ export default function PlaylistsScreen() {
     if (!session) {
       return;
     }
+    const cachedDetail = await loadCachedPlaylistDetail(session.user.id, playlist.id);
+    if (cachedDetail) {
+      setSelectedPlaylist(cachedDetail);
+      setCacheStatus((current) => ({
+        ...current,
+        ...Object.fromEntries(cachedDetail.songs.map((song) => [song.id, current[song.id] ?? "remote"])),
+      }));
+    }
     const detail = await getPlaylist(session.accessToken, playlist.id);
     await mergeSongCatalog(session.user.id, detail.songs);
     const statuses = await getSongCacheStatuses(detail.songs);
     setSelectedPlaylist(detail);
     setCacheStatus((current) => ({ ...current, ...statuses }));
+  }
+
+  async function loadMoreCatalogSongs() {
+    if (!session || loadingCatalogMore || !catalogPageInfo.hasMore) {
+      return;
+    }
+    setLoadingCatalogMore(true);
+    try {
+      const response = await listSongs(session.accessToken, CATALOG_PAGE_SIZE, catalogPageInfo.nextOffset);
+      const cached = await saveSongListCache(session.user.id, CATALOG_CACHE_KEY, response, { append: true });
+      const statuses = await getSongCacheStatuses(cached.songs);
+      setCatalogSongs(cached.songs);
+      setCatalogPageInfo({
+        total: cached.total,
+        nextOffset: cached.nextOffset,
+        hasMore: cached.hasMore,
+      });
+      setCacheStatus((current) => ({ ...current, ...statuses }));
+    } finally {
+      setLoadingCatalogMore(false);
+    }
   }
 
   async function playFromPlaylist(song: Song) {
@@ -227,11 +372,12 @@ export default function PlaylistsScreen() {
     await refreshPlaylists(selectedPlaylist?.id);
   }
 
-  const heroSong = selectedPlaylist?.songs[0] ?? null;
+  const heroSong = selectedCoverSong;
   const selectedIsSystem = Boolean(selectedPlaylist?.is_system);
 
   return (
-    <MusicPage>
+    <MusicPage
+      onEndReached={selectedPlaylist && !selectedIsSystem && catalogPageInfo.hasMore ? loadMoreCatalogSongs : undefined}>
       <Section>
         <View style={styles.header}>
           <View>
@@ -269,7 +415,9 @@ export default function PlaylistsScreen() {
       ) : null}
 
       <Section>
-        <View style={styles.featured}>
+        <Pressable
+          onLongPress={selectedPlaylist && !selectedIsSystem ? () => openPlaylistEditor(selectedPlaylist) : undefined}
+          style={({ pressed }) => [styles.featured, pressed && selectedPlaylist && !selectedIsSystem && styles.pressed]}>
           {heroSong ? (
             <SongArtwork accessToken={session?.accessToken ?? null} colors={artworkPalettes[3]} size={96} song={heroSong} />
           ) : (
@@ -297,7 +445,7 @@ export default function PlaylistsScreen() {
               <Text style={styles.playButtonText}>Play All</Text>
             </Pressable>
           ) : null}
-        </View>
+        </Pressable>
       </Section>
 
       <Section>
@@ -309,13 +457,19 @@ export default function PlaylistsScreen() {
           {playlists.map((playlist, index) => (
             <Pressable
               key={playlist.id}
+              onLongPress={!playlist.is_system ? () => openPlaylistEditor(playlist) : undefined}
               onPress={() => selectPlaylist(playlist)}
               style={({ pressed }) => [
                 styles.card,
                 selectedPlaylist?.id === playlist.id && styles.selectedCard,
                 pressed && styles.pressed,
               ]}>
-              <AlbumArt colors={artworkPalettes[index % artworkPalettes.length]} size={72} />
+              <SongArtwork
+                accessToken={session?.accessToken ?? null}
+                colors={artworkPalettes[index % artworkPalettes.length]}
+                size={72}
+                song={playlistSummaryCoverSong(playlist, catalogSongById)}
+              />
               <Text style={styles.cardTitle} numberOfLines={1}>
                 {playlist.name}
               </Text>
@@ -436,11 +590,139 @@ export default function PlaylistsScreen() {
                 </View>
               );
             })}
+            {loadingCatalogMore ? <Text style={styles.loadingMoreText}>Loading more songs</Text> : null}
           </View>
         </Section>
       ) : null}
+
+      <Modal animationType="fade" transparent visible={Boolean(editingPlaylist)} onRequestClose={closePlaylistEditor}>
+        <View style={styles.modalBackdrop}>
+          <View style={styles.editorPanel}>
+            <View style={styles.editorHeader}>
+              <View style={styles.editorHeaderCopy}>
+                <Text style={styles.editorLabel}>Edit Play List</Text>
+                <Text style={styles.editorTitle} numberOfLines={1}>
+                  {editingPlaylist?.name ?? "Play List"}
+                </Text>
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                onPress={closePlaylistEditor}
+                style={({ pressed }) => [styles.closeButton, pressed && styles.pressed]}>
+                <Text style={styles.closeIcon}>×</Text>
+              </Pressable>
+            </View>
+
+            <TextInput
+              autoCapitalize="words"
+              editable={!savingEdit}
+              onChangeText={setEditName}
+              placeholder="Playlist name"
+              placeholderTextColor={theme.colors.tertiaryText}
+              style={styles.input}
+              value={editName}
+            />
+
+            <View style={styles.coverEditor}>
+              <Text style={styles.coverEditorTitle}>Cover</Text>
+              {editingPlaylist?.songs.length ? (
+                <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                  <View style={styles.coverChoices}>
+                    {editingPlaylist.songs.map((song, index) => {
+                      const active = editCoverSongId === song.id;
+                      return (
+                        <Pressable
+                          accessibilityRole="button"
+                          key={song.id}
+                          onPress={() => setEditCoverSongId(song.id)}
+                          style={({ pressed }) => [
+                            styles.coverChoice,
+                            active && styles.coverChoiceActive,
+                            pressed && styles.pressed,
+                          ]}>
+                          <SongArtwork
+                            accessToken={session?.accessToken ?? null}
+                            colors={artworkPalettes[index % artworkPalettes.length]}
+                            size={62}
+                            song={song}
+                          />
+                          <Text style={[styles.coverChoiceTitle, active && styles.coverChoiceTitleActive]} numberOfLines={1}>
+                            {song.title}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </ScrollView>
+              ) : (
+                <Text style={styles.editorHint}>Add songs before choosing a cover.</Text>
+              )}
+            </View>
+
+            {editError ? <Text style={styles.editorError}>{editError}</Text> : null}
+
+            <View style={styles.editorActions}>
+              <Pressable
+                accessibilityRole="button"
+                disabled={savingEdit}
+                onPress={closePlaylistEditor}
+                style={({ pressed }) => [styles.secondaryButton, savingEdit && styles.disabled, pressed && styles.pressed]}>
+                <Text style={styles.secondaryButtonText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                disabled={!editName.trim() || savingEdit}
+                onPress={submitPlaylistEdit}
+                style={({ pressed }) => [
+                  styles.saveButton,
+                  (!editName.trim() || savingEdit) && styles.disabled,
+                  pressed && styles.pressed,
+                ]}>
+                <Text style={styles.saveButtonText}>{savingEdit ? "Saving" : "Save"}</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </MusicPage>
   );
+}
+
+function playlistDetailCoverSong(playlist: PlaylistDetail): Song | null {
+  if (playlist.cover_song_id) {
+    return playlist.songs.find((song) => song.id === playlist.cover_song_id) ?? playlist.songs[0] ?? null;
+  }
+  return playlist.songs[0] ?? null;
+}
+
+function playlistSummaryCoverSong(playlist: PlaylistSummary, songsById: Map<string, Song>): Song | null {
+  if (!playlist.cover_song_id) {
+    return null;
+  }
+  return songsById.get(playlist.cover_song_id) ?? coverSongStub(playlist.cover_song_id);
+}
+
+function coverSongStub(songId: string): Song {
+  return {
+    id: songId,
+    title: "",
+    artist: "",
+    album: "",
+    duration_seconds: null,
+    source: "playlist-cover",
+    original_filename: "",
+    file_size: 0,
+    file_sha256: "",
+    mime_type: "audio/mpeg",
+    tags: [],
+    audio_url: "",
+    download_url: "",
+    cover_url: `/v1/songs/${songId}/cover`,
+    is_liked: false,
+    liked_at: null,
+    created_at: "",
+    updated_at: "",
+  };
 }
 
 const styles = StyleSheet.create({
@@ -642,6 +924,14 @@ const styles = StyleSheet.create({
   activeText: {
     color: theme.colors.tint,
   },
+  loadingMoreText: {
+    color: theme.colors.tertiaryText,
+    fontSize: 12,
+    fontWeight: "900",
+    minHeight: 32,
+    textAlign: "center",
+    textAlignVertical: "center",
+  },
   emptyState: {
     backgroundColor: theme.colors.surface,
     borderRadius: theme.radius.md,
@@ -656,6 +946,128 @@ const styles = StyleSheet.create({
     color: theme.colors.secondaryText,
     fontSize: 13,
     marginTop: 3,
+  },
+  modalBackdrop: {
+    alignItems: "center",
+    backgroundColor: "rgba(9,10,18,0.42)",
+    flex: 1,
+    justifyContent: "center",
+    padding: 18,
+  },
+  editorPanel: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.md,
+    gap: 14,
+    maxHeight: "86%",
+    padding: 16,
+    width: "100%",
+  },
+  editorHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 12,
+  },
+  editorHeaderCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  editorLabel: {
+    color: theme.colors.tint,
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  editorTitle: {
+    color: theme.colors.text,
+    fontSize: 22,
+    fontWeight: "900",
+    marginTop: 2,
+  },
+  closeButton: {
+    alignItems: "center",
+    backgroundColor: "#F2F2F6",
+    borderRadius: 999,
+    height: 36,
+    justifyContent: "center",
+    width: 36,
+  },
+  closeIcon: {
+    color: theme.colors.secondaryText,
+    fontSize: 24,
+    fontWeight: "900",
+    lineHeight: 26,
+  },
+  coverEditor: {
+    gap: 8,
+  },
+  coverEditorTitle: {
+    color: theme.colors.text,
+    fontSize: 14,
+    fontWeight: "900",
+  },
+  coverChoices: {
+    flexDirection: "row",
+    gap: 10,
+    paddingVertical: 2,
+  },
+  coverChoice: {
+    borderColor: theme.colors.hairline,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    gap: 6,
+    padding: 7,
+    width: 92,
+  },
+  coverChoiceActive: {
+    borderColor: theme.colors.tint,
+    backgroundColor: theme.colors.tintSoft,
+  },
+  coverChoiceTitle: {
+    color: theme.colors.secondaryText,
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  coverChoiceTitleActive: {
+    color: theme.colors.tint,
+  },
+  editorHint: {
+    color: theme.colors.secondaryText,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  editorError: {
+    color: theme.colors.tint,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  editorActions: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  secondaryButton: {
+    alignItems: "center",
+    backgroundColor: "#F2F2F6",
+    borderRadius: 999,
+    flex: 1,
+    minHeight: 42,
+    justifyContent: "center",
+  },
+  secondaryButtonText: {
+    color: theme.colors.secondaryText,
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  saveButton: {
+    alignItems: "center",
+    backgroundColor: theme.colors.tint,
+    borderRadius: 999,
+    flex: 1,
+    minHeight: 42,
+    justifyContent: "center",
+  },
+  saveButtonText: {
+    color: "#FFFFFF",
+    fontSize: 13,
+    fontWeight: "900",
   },
   disabled: {
     opacity: 0.45,

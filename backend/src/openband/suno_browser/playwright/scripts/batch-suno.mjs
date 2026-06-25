@@ -828,6 +828,7 @@ const parseSongFile = (file, index) => {
     lyrics,
     slug: `${String(index + 1).padStart(2, '0')}-${slugify(title || basename(file))}`,
     beforeUrls: new Set(),
+    observedRows: [],
     completedRows: [],
     selectedRow: null,
     status: 'pending'
@@ -878,6 +879,80 @@ const clickCreateSongButton = async ({ page }) => {
 const submitScreenshotName = ({ baseName, attempt }) =>
   attempt === 1 ? `${baseName}.png` : `${baseName}-retry-${attempt}.png`;
 
+const detectSubmitRejection = async ({ page }) =>
+  page.evaluate(() => {
+    const normalize = (value) => (value || '').replace(/\s+/g, ' ').trim();
+    const visible = (el) => {
+      const style = window.getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+      return (
+        style.display !== 'none' &&
+        style.visibility !== 'hidden' &&
+        rect.width > 0 &&
+        rect.height > 0 &&
+        rect.bottom > 0 &&
+        rect.top < window.innerHeight &&
+        rect.right > 0 &&
+        rect.left < window.innerWidth
+      );
+    };
+
+    const candidates = [...document.querySelectorAll('[role="alert"], [aria-live], body *')]
+      .filter(visible)
+      .map((el) => normalize(el.textContent))
+      .filter(Boolean);
+    const rejectedText = candidates.find((text) =>
+      /couldn[’']?t generate that|could not generate that|lyrics contain copyrighted material|copyrighted material/i.test(text)
+    );
+
+    return rejectedText ? { rejected: true, text: rejectedText.slice(0, 500) } : { rejected: false, text: '' };
+  });
+
+const setSubmitUnconfirmedError = (task, fallback) => {
+  if (!/^Suno rejected submit:/.test(task.error || '')) {
+    task.error = fallback;
+  }
+};
+
+const waitForSubmissionEvidence = async ({ page, task, waitMs, maxScrolls, screenshotDir, attempt }) => {
+  const deadline = Date.now() + Math.max(waitMs, 5_000);
+  let observedRows = [];
+
+  while (Date.now() < deadline) {
+    const rejection = await detectSubmitRejection({ page }).catch(() => ({ rejected: false, text: '' }));
+    if (rejection.rejected) {
+      task.error = `Suno rejected submit: ${rejection.text}`;
+      await page
+        .screenshot({
+          path: join(screenshotDir, task.slug, submitScreenshotName({ baseName: 'submit-rejected', attempt })),
+          fullPage: true
+        })
+        .catch(() => {});
+      return false;
+    }
+
+    const rows = await getRowsForTitle({ page, title: task.title, maxScrolls });
+    observedRows = rows.filter((row) => !task.beforeUrls.has(row.href));
+    task.observedRows = observedRows.map(plainRow);
+
+    if (observedRows.length > 0) {
+      return true;
+    }
+
+    await sleep(2_000);
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => {});
+    await page.waitForTimeout(1_000);
+  }
+
+  await page
+    .screenshot({
+      path: join(screenshotDir, task.slug, submitScreenshotName({ baseName: 'submit-unconfirmed', attempt })),
+      fullPage: true
+    })
+    .catch(() => {});
+  return false;
+};
+
 const ensureCleanCreateForm = async ({ page, task, screenshotDir, attempt }) => {
   await humanKeyPress(page, 'Escape').catch(() => {});
   await openCreatePage({ page });
@@ -909,9 +984,11 @@ const ensureCleanCreateForm = async ({ page, task, screenshotDir, attempt }) => 
 
 const submitTaskWithCaptchaRetries = async ({ page, task, screenshotDir, postSubmitWaitMs, maxSubmitAttempts }) => {
   let sawCaptcha = false;
+  const evidenceWaitMs = Math.max(postSubmitWaitMs, 15_000);
 
   for (let attempt = 1; attempt <= maxSubmitAttempts; attempt += 1) {
     task.submitAttempt = attempt;
+    task.observedRows = [];
     await ensureCleanCreateForm({ page, task, screenshotDir, attempt });
 
     await fillAdvancedForm({ page, task });
@@ -960,7 +1037,12 @@ const submitTaskWithCaptchaRetries = async ({ page, task, screenshotDir, postSub
             })
             .catch(() => {});
         }
-        return { attempt, captchaMethod: captchaHandledAfterCreate, retriedAfterCaptcha: false, sawCaptcha };
+        if (await waitForSubmissionEvidence({ page, task, waitMs: evidenceWaitMs, maxScrolls, screenshotDir, attempt })) {
+          return { attempt, captchaMethod: captchaHandledAfterCreate, retriedAfterCaptcha: false, sawCaptcha };
+        }
+        setSubmitUnconfirmedError(task, 'Create captcha was solved, but no new song row appeared; retrying submit.');
+        task.retriedAfterCaptcha = true;
+        continue;
       }
       task.retriedAfterCaptcha = true;
       continue;
@@ -1007,7 +1089,12 @@ const submitTaskWithCaptchaRetries = async ({ page, task, screenshotDir, postSub
               fullPage: true
             })
             .catch(() => {});
-          return { attempt, captchaMethod: captchaHandledAfterWait, retriedAfterCaptcha: false, sawCaptcha };
+          if (await waitForSubmissionEvidence({ page, task, waitMs: evidenceWaitMs, maxScrolls, screenshotDir, attempt })) {
+            return { attempt, captchaMethod: captchaHandledAfterWait, retriedAfterCaptcha: false, sawCaptcha };
+          }
+          setSubmitUnconfirmedError(task, 'Post-submit captcha was solved, but no new song row appeared; retrying submit.');
+          task.retriedAfterCaptcha = true;
+          continue;
         }
         task.retriedAfterCaptcha = true;
         continue;
@@ -1021,12 +1108,14 @@ const submitTaskWithCaptchaRetries = async ({ page, task, screenshotDir, postSub
         .catch(() => {});
     }
 
-    return { attempt, captchaMethod: task.captchaMethod || null, retriedAfterCaptcha: sawCaptcha, sawCaptcha };
+    if (await waitForSubmissionEvidence({ page, task, waitMs: evidenceWaitMs, maxScrolls, screenshotDir, attempt })) {
+      return { attempt, captchaMethod: task.captchaMethod || null, retriedAfterCaptcha: sawCaptcha, sawCaptcha };
+    }
+    setSubmitUnconfirmedError(task, 'Create clicked, but no new song row appeared; retrying submit.');
+    task.retriedAfterCaptcha = sawCaptcha;
   }
 
-  throw new SunoCaptchaRequiredError(
-    `Suno 在 Create 后连续 ${maxSubmitAttempts} 次触发验证码；已停止，避免重复消耗额度。`
-  );
+  throw new Error(`Suno Create did not produce a new song row after ${maxSubmitAttempts} attempts.`);
 };
 
 const scrollSongListToTop = async ({ page }) =>
@@ -1436,6 +1525,7 @@ const serializeTask = (task) => ({
   status: task.status,
   error: task.error || '',
   beforeUrls: [...task.beforeUrls],
+  observedRows: (task.observedRows || []).map(plainRow),
   completedRows: (task.completedRows || []).map(plainRow),
   selectedRow: plainRow(task.selectedRow),
   submitAttempt: task.submitAttempt || null,
@@ -1486,6 +1576,7 @@ const hydrateTasksFromState = (state) => {
     if (!saved) continue;
 
     task.beforeUrls = new Set(Array.isArray(saved.beforeUrls) ? saved.beforeUrls : []);
+    task.observedRows = Array.isArray(saved.observedRows) ? saved.observedRows.filter(Boolean) : [];
     task.completedRows = Array.isArray(saved.completedRows) ? saved.completedRows.filter(Boolean) : [];
     task.selectedRow = saved.selectedRow || null;
     task.submitAttempt = saved.submitAttempt || null;
@@ -1503,6 +1594,21 @@ const hydrateTasksFromState = (state) => {
 
     if (task.status === 'ready' && !task.selectedRow) {
       task.status = 'submitted';
+    }
+
+    if (
+      task.status === 'submit_unconfirmed' ||
+      (task.status === 'submitted' &&
+        /^Only found 0\/\d+ completed new versions/.test(task.error) &&
+        task.observedRows.length === 0 &&
+        task.completedRows.length === 0)
+    ) {
+      task.status = 'pending';
+      task.beforeUrls = new Set();
+      task.observedRows = [];
+      task.completedRows = [];
+      task.selectedRow = null;
+      task.error = 'Previous submit had no visible Suno row; retrying submit.';
     }
 
     hydrated = true;
@@ -1640,6 +1746,7 @@ try {
     for (const task of tasks.filter((candidate) => !['ready', 'downloaded'].includes(candidate.status))) {
       const rows = await getRowsForTitle({ page, title: task.title, maxScrolls });
       const newRows = rows.filter((row) => !task.beforeUrls.has(row.href));
+      task.observedRows = newRows.map(plainRow);
       const completedRows = newRows
         .filter((row) => row.duration && row.durationSeconds !== null && row.menuButton)
         .sort((a, b) => b.durationSeconds - a.durationSeconds);
@@ -1670,7 +1777,12 @@ try {
   if (notReady.length > 0) {
     for (const task of notReady) {
       await page.screenshot({ path: join(screenshotDir, task.slug, 'error-not-ready.png'), fullPage: true }).catch(() => {});
-      task.error = `Only found ${task.completedRows.length}/${versionsNeeded} completed new versions`;
+      if ((task.observedRows || []).length === 0) {
+        task.status = 'submit_unconfirmed';
+        task.error = 'No new Suno song row appeared after Create; submit likely did not happen.';
+      } else {
+        task.error = `Only found ${task.completedRows.length}/${versionsNeeded} completed new versions`;
+      }
     }
     saveBatchState('not_ready');
     throw new Error(`Timed out waiting for: ${notReady.map((task) => `${task.title} (${task.error})`).join(', ')}`);

@@ -1,22 +1,28 @@
 import { useFocusEffect, useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Modal, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
 import { Section } from "@/components/AppShell";
 import { useAuth } from "@/components/AuthProvider";
 import { MusicPage } from "@/components/MusicPage";
-import { getMusicTags, subscribeMusicTags } from "@/lib/taste";
+import { getMusicTags, loadCachedMusicTags, subscribeMusicTags } from "@/lib/taste";
 import { theme } from "@/lib/theme";
+import { APP_VERSION } from "@/lib/version";
 
 export default function MeScreen() {
   const router = useRouter();
-  const { session, user, logout } = useAuth();
+  const { session, user, logout, updateProfileName } = useAuth();
+  const [editName, setEditName] = useState("");
+  const [editNameError, setEditNameError] = useState<string | null>(null);
+  const [editNameVisible, setEditNameVisible] = useState(false);
   const [loading, setLoading] = useState(false);
   const [logoutConfirmVisible, setLogoutConfirmVisible] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
+  const [savingName, setSavingName] = useState(false);
   const [tags, setTags] = useState<string[]>([]);
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
   const sortedTags = useMemo(() => [...tags].sort((left, right) => left.localeCompare(right)), [tags]);
+  const versionText = APP_VERSION;
 
   const loadTags = useCallback(async () => {
     if (!session) {
@@ -24,12 +30,23 @@ export default function MeScreen() {
     }
     setLoading(true);
     try {
+      const cached = await loadCachedMusicTags(session.user.id);
+      if (cached) {
+        setTags(cached.tags);
+        setUpdatedAt(cached.updated_at);
+      }
       const response = await getMusicTags(session.accessToken);
       setTags(response.tags);
       setUpdatedAt(response.updated_at);
     } catch {
-      setTags([]);
-      setUpdatedAt(null);
+      const cached = await loadCachedMusicTags(session.user.id);
+      if (cached) {
+        setTags(cached.tags);
+        setUpdatedAt(cached.updated_at);
+      } else {
+        setTags([]);
+        setUpdatedAt(null);
+      }
     } finally {
       setLoading(false);
     }
@@ -62,6 +79,40 @@ export default function MeScreen() {
     }
   }
 
+  function openNameEditor() {
+    setEditName(user?.label ?? "");
+    setEditNameError(null);
+    setEditNameVisible(true);
+  }
+
+  function closeNameEditor() {
+    if (savingName) {
+      return;
+    }
+    setEditNameVisible(false);
+    setEditName("");
+    setEditNameError(null);
+  }
+
+  async function submitName() {
+    const name = editName.trim();
+    if (!name || savingName) {
+      return;
+    }
+    setSavingName(true);
+    setEditNameError(null);
+    try {
+      await updateProfileName(name);
+      setEditNameVisible(false);
+      setEditName("");
+      setEditNameError(null);
+    } catch (exc) {
+      setEditNameError(exc instanceof Error ? exc.message : "Name could not be updated.");
+    } finally {
+      setSavingName(false);
+    }
+  }
+
   return (
     <MusicPage>
       <Section>
@@ -80,6 +131,13 @@ export default function MeScreen() {
             </Text>
             <Text style={styles.meta}>{tags.length ? `${tags.length} taste tags` : "No taste tags yet"}</Text>
           </View>
+          <Pressable
+            accessibilityLabel="Edit profile name"
+            accessibilityRole="button"
+            onPress={openNameEditor}
+            style={({ pressed }) => [styles.editButton, pressed && styles.pressed]}>
+            <Text style={styles.editButtonText}>Edit</Text>
+          </Pressable>
           {loading ? <ActivityIndicator color={theme.colors.tint} size="small" /> : null}
         </View>
       </Section>
@@ -92,7 +150,7 @@ export default function MeScreen() {
           </View>
           <Pressable
             accessibilityRole="button"
-            onPress={() => router.push("/onboarding" as never)}
+            onPress={() => router.push("/taste-tags" as never)}
             style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}>
             <Text style={styles.iconButtonText}>＋</Text>
           </Pressable>
@@ -111,6 +169,13 @@ export default function MeScreen() {
             <Text style={styles.emptyText}>Add favorites to generate your first music tags.</Text>
           </View>
         )}
+      </Section>
+
+      <Section>
+        <View style={styles.versionPanel}>
+          <Text style={styles.versionLabel}>Version</Text>
+          <Text style={styles.versionText}>{versionText}</Text>
+        </View>
       </Section>
 
       <Section>
@@ -157,6 +222,56 @@ export default function MeScreen() {
                 onPress={submitLogout}
                 style={({ pressed }) => [styles.confirmButton, pressed && styles.pressed, loggingOut && styles.disabled]}>
                 <Text style={styles.confirmButtonText}>{loggingOut ? "Logging Out" : "Log Out"}</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        animationType="fade"
+        transparent
+        visible={editNameVisible}
+        onRequestClose={closeNameEditor}>
+        <View style={styles.modalRoot}>
+          <Pressable
+            accessibilityLabel="Cancel profile name edit"
+            disabled={savingName}
+            onPress={closeNameEditor}
+            style={styles.backdrop}
+          />
+          <View style={styles.confirmPanel}>
+            <Text style={styles.confirmTitle}>Profile name</Text>
+            <TextInput
+              autoCapitalize="words"
+              editable={!savingName}
+              onChangeText={setEditName}
+              onSubmitEditing={submitName}
+              placeholder="Your name"
+              placeholderTextColor={theme.colors.tertiaryText}
+              returnKeyType="done"
+              style={styles.nameInput}
+              value={editName}
+            />
+            {editNameError ? <Text style={styles.errorText}>{editNameError}</Text> : null}
+            <View style={styles.confirmActions}>
+              <Pressable
+                accessibilityRole="button"
+                disabled={savingName}
+                onPress={closeNameEditor}
+                style={({ pressed }) => [styles.cancelButton, pressed && styles.pressed, savingName && styles.disabled]}>
+                <Text style={styles.cancelText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                disabled={!editName.trim() || savingName}
+                onPress={submitName}
+                style={({ pressed }) => [
+                  styles.confirmButton,
+                  pressed && styles.pressed,
+                  (!editName.trim() || savingName) && styles.disabled,
+                ]}>
+                <Text style={styles.confirmButtonText}>{savingName ? "Saving" : "Save"}</Text>
               </Pressable>
             </View>
           </View>
@@ -227,6 +342,19 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "700",
     marginTop: 5,
+  },
+  editButton: {
+    alignItems: "center",
+    backgroundColor: theme.colors.tintSoft,
+    borderRadius: theme.radius.pill,
+    minHeight: 36,
+    justifyContent: "center",
+    paddingHorizontal: 14,
+  },
+  editButtonText: {
+    color: theme.colors.tint,
+    fontSize: 13,
+    fontWeight: "900",
   },
   sectionHeader: {
     alignItems: "center",
@@ -301,6 +429,25 @@ const styles = StyleSheet.create({
     height: 48,
     justifyContent: "center",
   },
+  versionPanel: {
+    alignItems: "center",
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.md,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    minHeight: 50,
+    paddingHorizontal: 14,
+  },
+  versionLabel: {
+    color: theme.colors.text,
+    fontSize: 15,
+    fontWeight: "900",
+  },
+  versionText: {
+    color: theme.colors.secondaryText,
+    fontSize: 13,
+    fontWeight: "800",
+  },
   logoutText: {
     color: theme.colors.tint,
     fontSize: 15,
@@ -338,6 +485,22 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "700",
     lineHeight: 20,
+  },
+  nameInput: {
+    backgroundColor: theme.colors.background,
+    borderColor: theme.colors.hairline,
+    borderRadius: theme.radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    color: theme.colors.text,
+    fontSize: 16,
+    fontWeight: "800",
+    minHeight: 46,
+    paddingHorizontal: 12,
+  },
+  errorText: {
+    color: theme.colors.tint,
+    fontSize: 12,
+    fontWeight: "800",
   },
   confirmActions: {
     flexDirection: "row",

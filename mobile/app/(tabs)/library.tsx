@@ -1,3 +1,4 @@
+import { useRouter } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
@@ -12,15 +13,21 @@ import {
   SongCacheStatus,
   cacheSong,
   getSongCacheStatuses,
-  listAllSongs,
+  listSongs,
+  loadSongListCache,
   loadCachedSongs,
   readableFileSize,
-  saveSongCatalog,
+  saveSongListCache,
+  songListCacheKey,
   songTagSummary,
 } from "@/lib/songs";
 import { artworkPalettes, theme } from "@/lib/theme";
 
+const LIBRARY_PAGE_SIZE = 50;
+const LIBRARY_CACHE_KEY = songListCacheKey("library");
+
 export default function LibraryScreen() {
+  const router = useRouter();
   const { session } = useAuth();
   const { busySongId, currentSong, isPlaying, playSong, updateCurrentSongLike } = usePlayer();
   const [songs, setSongs] = useState<Song[]>([]);
@@ -28,6 +35,13 @@ export default function LibraryScreen() {
   const [tagBrowserOpen, setTagBrowserOpen] = useState(false);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [tagSort, setTagSort] = useState<TagSort>("count");
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [pageInfo, setPageInfo] = useState({
+    total: 0,
+    nextOffset: 0,
+    hasMore: false,
+    isStale: false,
+  });
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [playerTrack, setPlayerTrack] = useState({
     title: "Lake Light",
@@ -37,38 +51,90 @@ export default function LibraryScreen() {
   useEffect(() => {
     let mounted = true;
 
-    async function loadSongs() {
+    async function loadInitialSongs() {
       if (!session) {
         setSongs([]);
         setCacheStatus({});
+        setPageInfo({ total: 0, nextOffset: 0, hasMore: false, isStale: false });
         return;
       }
+      const cachedList = await loadSongListCache(session.user.id, LIBRARY_CACHE_KEY);
+      if (mounted && cachedList) {
+        setSongs(cachedList.songs);
+        setPageInfo({
+          total: cachedList.total,
+          nextOffset: cachedList.nextOffset,
+          hasMore: cachedList.hasMore,
+          isStale: cachedList.isStale,
+        });
+        setCacheStatus(await getSongCacheStatuses(cachedList.songs));
+        setSyncMessage(cachedList.isStale ? "Cached library shown. Refreshing changes." : null);
+      }
       try {
-        const response = await listAllSongs(session.accessToken);
-        await saveSongCatalog(session.user.id, response.songs);
-        const statuses = await getSongCacheStatuses(response.songs);
+        const response = await listSongs(session.accessToken, LIBRARY_PAGE_SIZE, 0);
+        const cached = await saveSongListCache(session.user.id, LIBRARY_CACHE_KEY, response);
+        const statuses = await getSongCacheStatuses(cached.songs);
         if (mounted) {
-          setSongs(response.songs);
+          setSongs(cached.songs);
           setCacheStatus(statuses);
+          setPageInfo({
+            total: cached.total,
+            nextOffset: cached.nextOffset,
+            hasMore: cached.hasMore,
+            isStale: cached.isStale,
+          });
           setSyncMessage(null);
         }
       } catch {
-        const cachedSongs = await loadCachedSongs(session.user.id);
-        const statuses = await getSongCacheStatuses(cachedSongs);
-        if (mounted) {
-          setSongs(cachedSongs);
-          setCacheStatus(statuses);
-          setSyncMessage(cachedSongs.length ? "Offline library loaded from this phone." : "Library could not load.");
+        if (!cachedList) {
+          const cachedSongs = await loadCachedSongs(session.user.id);
+          const statuses = await getSongCacheStatuses(cachedSongs);
+          if (mounted) {
+            setSongs(cachedSongs);
+            setCacheStatus(statuses);
+            setPageInfo({
+              total: cachedSongs.length,
+              nextOffset: cachedSongs.length,
+              hasMore: false,
+              isStale: false,
+            });
+            setSyncMessage(cachedSongs.length ? "Offline library loaded from this phone." : "Library could not load.");
+          }
         }
       }
     }
 
-    loadSongs();
+    loadInitialSongs();
 
     return () => {
       mounted = false;
     };
   }, [session]);
+
+  async function loadMoreSongs() {
+    if (!session || loadingMore || !pageInfo.hasMore) {
+      return;
+    }
+    setLoadingMore(true);
+    setSyncMessage(null);
+    try {
+      const response = await listSongs(session.accessToken, LIBRARY_PAGE_SIZE, pageInfo.nextOffset);
+      const cached = await saveSongListCache(session.user.id, LIBRARY_CACHE_KEY, response, { append: true });
+      const statuses = await getSongCacheStatuses(cached.songs);
+      setSongs(cached.songs);
+      setCacheStatus(statuses);
+      setPageInfo({
+        total: cached.total,
+        nextOffset: cached.nextOffset,
+        hasMore: cached.hasMore,
+        isStale: cached.isStale,
+      });
+    } catch (exc) {
+      setSyncMessage(exc instanceof Error ? exc.message : "More songs could not load.");
+    } finally {
+      setLoadingMore(false);
+    }
+  }
 
   const tagFacets = useMemo(() => buildTagFacets(songs, tagSort), [songs, tagSort]);
   const selectedTagKeys = useMemo(() => new Set(selectedTags.map(tagKey)), [selectedTags]);
@@ -137,10 +203,23 @@ export default function LibraryScreen() {
   const selectedTitle = selectedTagsTitle(selectedTags);
 
   return (
-    <MusicPage playerTitle={playerTrack.title} playerSubtitle={playerTrack.subtitle}>
+    <MusicPage
+      onEndReached={pageInfo.hasMore && selectedTagKeys.size === 0 ? loadMoreSongs : undefined}
+      playerTitle={playerTrack.title}
+      playerSubtitle={playerTrack.subtitle}>
       <Section>
         <Text style={styles.eyebrow}>Collection</Text>
         <Text style={styles.title}>Library</Text>
+      </Section>
+
+      <Section>
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => router.push("/search" as never)}
+          style={({ pressed }) => [styles.searchButton, pressed && styles.pressed]}>
+          <Text style={styles.searchPlaceholder}>Search songs</Text>
+          <Text style={styles.searchIcon}>⌕</Text>
+        </Pressable>
       </Section>
 
       {syncMessage ? (
@@ -224,7 +303,11 @@ export default function LibraryScreen() {
         <Section>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>{selectedTitle ?? "Recently Added"}</Text>
-            <Text style={styles.sectionMeta}>{visibleSongs.length} songs</Text>
+            <Text style={styles.sectionMeta}>
+              {pageInfo.total > visibleSongs.length && selectedTagKeys.size === 0
+                ? `${visibleSongs.length}/${pageInfo.total} songs`
+                : `${visibleSongs.length} songs`}
+            </Text>
           </View>
           <View style={styles.list}>
             {visibleSongs.map((song, index) => {
@@ -262,6 +345,11 @@ export default function LibraryScreen() {
                 </Pressable>
               );
             })}
+            {loadingMore ? (
+              <View style={styles.loadingMoreRow}>
+                <Text style={styles.loadingMoreText}>Loading more</Text>
+              </View>
+            ) : null}
           </View>
         </Section>
       ) : null}
@@ -351,6 +439,28 @@ const styles = StyleSheet.create({
     color: theme.colors.secondaryText,
     fontSize: 12,
     fontWeight: "800",
+  },
+  searchButton: {
+    alignItems: "center",
+    backgroundColor: theme.colors.surface,
+    borderColor: theme.colors.hairline,
+    borderRadius: theme.radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    minHeight: 48,
+    paddingHorizontal: 14,
+  },
+  searchPlaceholder: {
+    color: theme.colors.tertiaryText,
+    fontSize: 15,
+    fontWeight: "800",
+  },
+  searchIcon: {
+    color: theme.colors.tint,
+    fontSize: 22,
+    fontWeight: "900",
+    lineHeight: 24,
   },
   sectionTitle: {
     color: theme.colors.text,
@@ -513,6 +623,19 @@ const styles = StyleSheet.create({
     color: theme.colors.tertiaryText,
     fontSize: 12,
     marginTop: 4,
+  },
+  loadingMoreRow: {
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 32,
+  },
+  loadingMoreText: {
+    color: theme.colors.tertiaryText,
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  disabled: {
+    opacity: 0.52,
   },
   pressed: {
     opacity: 0.78,

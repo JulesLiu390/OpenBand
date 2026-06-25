@@ -4,7 +4,9 @@ import {
   ActivityIndicator,
   Animated,
   Easing,
+  GestureResponderEvent,
   Modal,
+  PanResponder,
   Platform,
   Pressable,
   SafeAreaView,
@@ -13,6 +15,7 @@ import {
   Text,
   View,
   type DimensionValue,
+  type LayoutChangeEvent,
 } from "react-native";
 import { VolumeManager } from "react-native-volume-manager";
 
@@ -45,6 +48,7 @@ export default function PlayerScreen() {
     repeatMode,
     cyclePlaybackOrder,
     cycleRepeatMode,
+    seekTo,
     togglePlayPause,
     updateCurrentSongLike,
   } = usePlayer();
@@ -59,15 +63,22 @@ export default function PlayerScreen() {
   const [tagAction, setTagAction] = useState<TagAction | null>(null);
   const [tagActionBusy, setTagActionBusy] = useState(false);
   const [systemVolume, setSystemVolume] = useState(1);
+  const [scrubTime, setScrubTime] = useState<number | null>(null);
+  const [trackWidth, setTrackWidth] = useState(0);
   const queueAnimation = useRef(new Animated.Value(0)).current;
+  const progressTrackRef = useRef<View | null>(null);
+  const progressTrackPageXRef = useRef(0);
+  const pendingSeekTimeRef = useRef(0);
   const params = useLocalSearchParams<{ title?: string | string[]; subtitle?: string | string[] }>();
   const title = Array.isArray(params.title) ? params.title[0] : params.title;
   const subtitle = Array.isArray(params.subtitle) ? params.subtitle[0] : params.subtitle;
   const displayTitle = currentSong?.title ?? title ?? currentTrack.name;
   const displaySubtitle = currentSong ? songTagSummary(currentSong) : (subtitle ?? "");
   const displayDuration = duration || currentSong?.duration_seconds || 0;
-  const progress = displayDuration > 0 ? Math.min(100, Math.max(0, (currentTime / displayDuration) * 100)) : 0;
+  const displayedCurrentTime = scrubTime ?? currentTime;
+  const progress = displayDuration > 0 ? Math.min(100, Math.max(0, (displayedCurrentTime / displayDuration) * 100)) : 0;
   const knobPosition = `${Math.min(96, progress)}%` as DimensionValue;
+  const canSeek = Boolean(currentSong && displayDuration > 0);
   const volumeLevel = clampVolume(systemVolume);
   const volumeWidth = `${Math.round(volumeLevel * 100)}%` as DimensionValue;
   const isLiked = Boolean(currentSong?.is_liked);
@@ -85,6 +96,54 @@ export default function PlayerScreen() {
       }),
     }),
     [queueAnimation],
+  );
+  const progressResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: () => canSeek,
+        onMoveShouldSetPanResponderCapture: () => canSeek,
+        onStartShouldSetPanResponder: () => canSeek,
+        onStartShouldSetPanResponderCapture: () => canSeek,
+        onPanResponderGrant: (event) => {
+          if (!canSeek) {
+            return;
+          }
+          progressTrackRef.current?.measure((_x, _y, width, _height, pageX) => {
+            progressTrackPageXRef.current = pageX;
+            setTrackWidth(width);
+            updateScrubTime(event.nativeEvent.locationX, width);
+          });
+        },
+        onPanResponderMove: (_event, gestureState) => {
+          if (!canSeek) {
+            return;
+          }
+          const width = trackWidth || 1;
+          updateScrubTime(gestureState.moveX - progressTrackPageXRef.current, width);
+        },
+        onPanResponderRelease: (_event, gestureState) => {
+          if (!canSeek) {
+            setScrubTime(null);
+            return;
+          }
+          const width = trackWidth || 1;
+          const nextTime = pendingSeekTimeRef.current || timeForTrackOffset(gestureState.moveX - progressTrackPageXRef.current, width, displayDuration);
+          setScrubTime(nextTime);
+          seekTo(nextTime)
+            .catch(() => {
+              // Keep the visual scrub stable even if one platform rejects a seek.
+            })
+            .finally(() => {
+              pendingSeekTimeRef.current = 0;
+              setScrubTime(null);
+            });
+        },
+        onPanResponderTerminate: () => {
+          pendingSeekTimeRef.current = 0;
+          setScrubTime(null);
+        },
+      }),
+    [canSeek, displayDuration, seekTo, trackWidth],
   );
 
   useEffect(() => {
@@ -220,6 +279,33 @@ export default function PlayerScreen() {
     closeQueue();
   }
 
+  function handleProgressLayout(event: LayoutChangeEvent) {
+    setTrackWidth(event.nativeEvent.layout.width);
+  }
+
+  function handleProgressPress(event: GestureResponderEvent) {
+    if (!canSeek) {
+      return;
+    }
+    const nextTime = timeForTrackOffset(event.nativeEvent.locationX, trackWidth || 1, displayDuration);
+    pendingSeekTimeRef.current = nextTime;
+    setScrubTime(nextTime);
+    seekTo(nextTime)
+      .catch(() => {
+        // Seeking is best-effort across native and web audio backends.
+      })
+      .finally(() => {
+        pendingSeekTimeRef.current = 0;
+        setScrubTime(null);
+      });
+  }
+
+  function updateScrubTime(offsetX: number, width: number) {
+    const nextTime = timeForTrackOffset(offsetX, width, displayDuration);
+    pendingSeekTimeRef.current = nextTime;
+    setScrubTime(nextTime);
+  }
+
   return (
     <SafeAreaView style={styles.safe}>
       <View style={styles.screen}>
@@ -265,12 +351,24 @@ export default function PlayerScreen() {
           </View>
 
           <View style={styles.progressBlock}>
-            <View style={styles.trackLine}>
-              <View style={[styles.playedLine, { width: `${progress}%` }]} />
-              <View style={[styles.knob, { left: knobPosition }]} />
-            </View>
+            <Pressable
+              accessibilityLabel="Seek playback position"
+              accessibilityRole="adjustable"
+              disabled={!canSeek}
+              hitSlop={12}
+              onPress={handleProgressPress}
+              style={[styles.trackLineTouch, !canSeek && styles.disabledButton]}>
+              <View
+                ref={progressTrackRef}
+                onLayout={handleProgressLayout}
+                style={styles.trackLine}
+                {...progressResponder.panHandlers}>
+                <View style={[styles.playedLine, { width: `${progress}%` }]} />
+                <View style={[styles.knob, { left: knobPosition }]} />
+              </View>
+            </Pressable>
             <View style={styles.timeRow}>
-              <Text style={styles.time}>{formatDuration(Math.floor(currentTime))}</Text>
+              <Text style={styles.time}>{formatDuration(Math.floor(displayedCurrentTime))}</Text>
               <Text style={styles.time}>
                 {displayDuration > 0 ? formatDuration(Math.floor(displayDuration)) : currentTrack.duration}
               </Text>
@@ -585,6 +683,10 @@ const styles = StyleSheet.create({
   },
   progressBlock: {
     gap: 8,
+  },
+  trackLineTouch: {
+    justifyContent: "center",
+    minHeight: 34,
   },
   trackLine: {
     backgroundColor: "#D9D9DF",
@@ -999,6 +1101,14 @@ function clampVolume(value: number): number {
     return 1;
   }
   return Math.max(0, Math.min(1, value));
+}
+
+function timeForTrackOffset(offsetX: number, width: number, duration: number): number {
+  if (!Number.isFinite(duration) || duration <= 0 || !Number.isFinite(width) || width <= 0) {
+    return 0;
+  }
+  const ratio = Math.max(0, Math.min(1, offsetX / width));
+  return ratio * duration;
 }
 
 function repeatModeLabel(mode: RepeatMode): string {

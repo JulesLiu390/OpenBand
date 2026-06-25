@@ -100,6 +100,15 @@ def test_invite_login_refresh_and_music_tag_preferences(tmp_path: Path, monkeypa
     assert me.status_code == 200
     assert me.json()["user"]["label"] == "Alice"
 
+    renamed = client.patch("/v1/me", headers=headers, json={"label": "Alice Beats"})
+    assert renamed.status_code == 200
+    assert renamed.json()["user"]["id"] == token_body["user"]["id"]
+    assert renamed.json()["user"]["label"] == "Alice Beats"
+
+    renamed_me = client.get("/v1/me", headers=headers)
+    assert renamed_me.status_code == 200
+    assert renamed_me.json()["user"]["label"] == "Alice Beats"
+
     updated_tags = client.put(
         "/v1/me/music-tags",
         headers=headers,
@@ -121,6 +130,7 @@ def test_invite_login_refresh_and_music_tag_preferences(tmp_path: Path, monkeypa
     refreshed_body = refresh.json()
     assert refreshed_body["access_token"] != token_body["access_token"]
     assert refreshed_body["refresh_token"] != token_body["refresh_token"]
+    assert refreshed_body["user"]["label"] == "Alice Beats"
 
     old_refresh = client.post(
         "/v1/auth/refresh",

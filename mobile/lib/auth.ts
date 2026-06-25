@@ -97,6 +97,18 @@ export async function getMe(accessToken: string): Promise<AuthUser> {
   return ((await response.json()) as MeResponse).user;
 }
 
+export async function updateMe(accessToken: string, updates: { label: string }): Promise<AuthUser> {
+  const response = await authFetch("/v1/me", accessToken, {
+    body: JSON.stringify(updates),
+    headers: {
+      "Content-Type": "application/json",
+    },
+    method: "PATCH",
+  });
+  await assertOk(response);
+  return ((await response.json()) as MeResponse).user;
+}
+
 export async function logoutSession(accessToken: string, refreshToken: string): Promise<void> {
   let currentAccessToken = accessToken;
   let currentRefreshToken = refreshToken;
