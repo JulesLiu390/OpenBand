@@ -6,6 +6,7 @@ import { Section } from "@/components/AppShell";
 import { useAuth } from "@/components/AuthProvider";
 import { MusicPage } from "@/components/MusicPage";
 import {
+  generateMusicProfile,
   getMusicTagCatalog,
   getMusicTags,
   loadCachedMusicTagCatalog,
@@ -16,6 +17,11 @@ import { loadSongCatalog } from "@/lib/songs";
 import { theme } from "@/lib/theme";
 
 const RESULT_LIMIT = 120;
+
+type GeneratedTagCandidate = {
+  tag: string;
+  meaning: string;
+};
 
 export default function TasteTagsScreen() {
   const router = useRouter();
@@ -28,6 +34,11 @@ export default function TasteTagsScreen() {
   const [saving, setSaving] = useState(false);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [savedTags, setSavedTags] = useState<string[]>([]);
+  const [profileInput, setProfileInput] = useState("");
+  const [generating, setGenerating] = useState(false);
+  const [generateError, setGenerateError] = useState<string | null>(null);
+  const [generatedSummary, setGeneratedSummary] = useState("");
+  const [generatedCandidates, setGeneratedCandidates] = useState<GeneratedTagCandidate[]>([]);
 
   const selectedKeys = useMemo(() => new Set(selectedTags.map(tagKey)), [selectedTags]);
   const dirty = useMemo(() => !sameTags(selectedTags, savedTags), [savedTags, selectedTags]);
@@ -123,6 +134,14 @@ export default function TasteTagsScreen() {
     setSelectedTags((current) => current.filter((item) => tagKey(item) !== key));
   }
 
+  function toggleTag(tag: string) {
+    if (selectedKeys.has(tagKey(tag))) {
+      removeTag(tag);
+      return;
+    }
+    addTag(tag);
+  }
+
   async function saveTags() {
     if (!session || saving || !dirty) {
       return;
@@ -138,6 +157,58 @@ export default function TasteTagsScreen() {
     } finally {
       setSaving(false);
     }
+  }
+
+  async function generateSuggestions() {
+    if (!session || generating) {
+      return;
+    }
+    const input = profileInput.trim();
+    if (!input) {
+      setGenerateError("Add a few favorites first.");
+      return;
+    }
+
+    setGenerating(true);
+    setGenerateError(null);
+    setGeneratedSummary("");
+    setGeneratedCandidates([]);
+    try {
+      const response = await generateMusicProfile(session.accessToken, {
+        profile_input: input,
+        save: false,
+      });
+      const catalogByKey = new Map(catalogTags.map((tag) => [tagKey(tag), tag]));
+      const unknownKeys = new Set(response.unknown_tags.map(tagKey));
+      const meaningByKey = new Map(response.tag_meanings.map((item) => [tagKey(item.tag), item.meaning]));
+      const nextCandidates = dedupeCandidateTags(
+        response.tags
+          .filter((tag) => !tagKey(tag).startsWith("no "))
+          .filter((tag) => !unknownKeys.has(tagKey(tag)))
+          .map((tag) => {
+            const key = tagKey(tag);
+            const catalogTag = catalogByKey.get(key) ?? tag;
+            return {
+              tag: catalogTag,
+              meaning: meaningByKey.get(key) ?? fallbackMeaning(catalogTag),
+            };
+          }),
+      ).sort((left, right) => left.tag.localeCompare(right.tag));
+
+      setGeneratedSummary(response.reference_summary);
+      setGeneratedCandidates(nextCandidates);
+      if (!nextCandidates.length) {
+        setGenerateError("No matching catalog tags found.");
+      }
+    } catch (exc) {
+      setGenerateError(exc instanceof Error ? exc.message : "Tags could not generate.");
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  function toggleGeneratedTag(tag: string) {
+    toggleTag(tag);
   }
 
   return (
@@ -159,7 +230,7 @@ export default function TasteTagsScreen() {
 
       <Section>
         <View style={styles.actionRow}>
-          <Text style={styles.meta}>{selectedTags.length} selected</Text>
+          <Text style={styles.meta}>{dirty ? `${selectedTags.length} selected · unsaved` : `${selectedTags.length} selected`}</Text>
           <Pressable
             accessibilityRole="button"
             disabled={!dirty || saving}
@@ -170,6 +241,69 @@ export default function TasteTagsScreen() {
         </View>
         {loading ? <ActivityIndicator color={theme.colors.tint} size="small" /> : null}
         {error ? <Text style={styles.errorText}>{error}</Text> : null}
+      </Section>
+
+      <Section>
+        <View style={styles.generatorHeader}>
+          <Text style={[styles.sectionTitle, styles.generatorTitle]}>AI Suggestions</Text>
+          <Pressable
+            accessibilityRole="button"
+            disabled={generating || !session}
+            onPress={generateSuggestions}
+            style={({ pressed }) => [styles.generateButton, (generating || !session) && styles.disabled, pressed && styles.pressed]}>
+            {generating ? <ActivityIndicator color="#FFFFFF" size="small" /> : <Text style={styles.generateText}>Generate</Text>}
+          </Pressable>
+        </View>
+        {generatedSummary ? <Text style={styles.generatorSummary}>{generatedSummary}</Text> : null}
+        <TextInput
+          autoCapitalize="sentences"
+          multiline
+          onChangeText={setProfileInput}
+          placeholder="Artists, songs, games, scenes, moods, sounds..."
+          placeholderTextColor={theme.colors.tertiaryText}
+          style={[styles.searchInput, styles.profileInput]}
+          textAlignVertical="top"
+          value={profileInput}
+        />
+        {generateError ? <Text style={styles.errorText}>{generateError}</Text> : null}
+        {generatedCandidates.length ? (
+          <>
+            <View style={styles.suggestionActionRow}>
+              <Text style={styles.meta}>{generatedCandidates.length} suggestions</Text>
+            </View>
+            <View style={styles.suggestionGrid}>
+              {generatedCandidates.map((candidate) => {
+                const isSelected = selectedKeys.has(tagKey(candidate.tag));
+                return (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: isSelected }}
+                    key={candidate.tag}
+                    onPress={() => toggleGeneratedTag(candidate.tag)}
+                    style={({ pressed }) => [
+                      styles.suggestionCard,
+                      isSelected && styles.suggestionCardSelected,
+                      pressed && styles.pressed,
+                    ]}>
+                    <View style={styles.suggestionCardHeader}>
+                      <Text style={[styles.suggestionTagText, isSelected && styles.suggestionTagTextSelected]}>
+                        {candidate.tag}
+                      </Text>
+                      <Text style={[styles.suggestionStatus, isSelected && styles.suggestionStatusSelected]}>
+                        {isSelected ? "Selected" : "Add"}
+                      </Text>
+                    </View>
+                    <Text
+                      numberOfLines={4}
+                      style={[styles.suggestionMeaning, isSelected && styles.suggestionMeaningSelected]}>
+                      {candidate.meaning}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </>
+        ) : null}
       </Section>
 
       <Section>
@@ -246,6 +380,21 @@ function songCatalogTags(songs: Awaited<ReturnType<typeof loadSongCatalog>>): st
   return Array.from(tags.values()).sort((left, right) => left.localeCompare(right));
 }
 
+function dedupeCandidateTags(candidates: GeneratedTagCandidate[]): GeneratedTagCandidate[] {
+  const byKey = new Map<string, GeneratedTagCandidate>();
+  candidates.forEach((candidate) => {
+    const key = tagKey(candidate.tag);
+    if (!byKey.has(key)) {
+      byKey.set(key, candidate);
+    }
+  });
+  return Array.from(byKey.values());
+}
+
+function fallbackMeaning(tag: string): string {
+  return `Signals a preference for ${tag} in the music's style, sound, mood, arrangement, or production.`;
+}
+
 function tagKey(tag: string): string {
   return tag.trim().toLowerCase();
 }
@@ -289,7 +438,8 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     minHeight: 58,
-    paddingHorizontal: 12,
+    paddingLeft: 12,
+    paddingRight: 12,
   },
   meta: {
     color: theme.colors.secondaryText,
@@ -302,7 +452,7 @@ const styles = StyleSheet.create({
     borderRadius: theme.radius.pill,
     minHeight: 38,
     justifyContent: "center",
-    minWidth: 76,
+    minWidth: 92,
     paddingHorizontal: 14,
   },
   saveText: {
@@ -315,6 +465,37 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: "900",
   },
+  generatorHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 12,
+    justifyContent: "space-between",
+    paddingRight: 12,
+  },
+  generatorTitle: {
+    flex: 1,
+    minWidth: 0,
+  },
+  generatorSummary: {
+    color: theme.colors.secondaryText,
+    fontSize: 13,
+    fontWeight: "700",
+    marginTop: 2,
+  },
+  generateButton: {
+    alignItems: "center",
+    backgroundColor: theme.colors.tint,
+    borderRadius: theme.radius.pill,
+    minHeight: 38,
+    justifyContent: "center",
+    minWidth: 92,
+    paddingHorizontal: 14,
+  },
+  generateText: {
+    color: "#FFFFFF",
+    fontSize: 13,
+    fontWeight: "900",
+  },
   searchInput: {
     backgroundColor: theme.colors.surface,
     borderColor: theme.colors.hairline,
@@ -325,6 +506,62 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     minHeight: 48,
     paddingHorizontal: 14,
+  },
+  profileInput: {
+    minHeight: 112,
+    paddingTop: 12,
+  },
+  suggestionActionRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+  },
+  suggestionGrid: {
+    gap: 8,
+  },
+  suggestionCard: {
+    backgroundColor: theme.colors.surface,
+    borderColor: theme.colors.hairline,
+    borderRadius: theme.radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: 6,
+    padding: 12,
+  },
+  suggestionCardSelected: {
+    backgroundColor: theme.colors.tintSoft,
+    borderColor: theme.colors.tint,
+  },
+  suggestionCardHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 10,
+    justifyContent: "space-between",
+  },
+  suggestionTagText: {
+    color: theme.colors.text,
+    flex: 1,
+    fontSize: 15,
+    fontWeight: "900",
+  },
+  suggestionTagTextSelected: {
+    color: theme.colors.tint,
+  },
+  suggestionStatus: {
+    color: theme.colors.secondaryText,
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  suggestionStatusSelected: {
+    color: theme.colors.tint,
+  },
+  suggestionMeaning: {
+    color: theme.colors.secondaryText,
+    fontSize: 13,
+    fontWeight: "700",
+    lineHeight: 18,
+  },
+  suggestionMeaningSelected: {
+    color: theme.colors.text,
   },
   tagWrap: {
     flexDirection: "row",

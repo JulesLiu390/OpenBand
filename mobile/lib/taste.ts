@@ -29,6 +29,7 @@ export type MusicProfileResponse = MusicTagsResponse & {
   known_tags: string[];
   corrected_tags: Array<{ raw: string; corrected: string; method: string }>;
   unknown_tags: string[];
+  tag_meanings: Array<{ tag: string; meaning: string }>;
 };
 
 type MusicTagsListener = (response: MusicTagsResponse) => void;

@@ -117,6 +117,11 @@ def test_api_profiles_scores_and_ranks_songs(tmp_path: Path, monkeypatch) -> Non
             known_tags=["ambient", "piano", "jazz"],
             corrected_tags=[],
             unknown_tags=[],
+            tag_meanings=[
+                {"tag": "ambient", "meaning": "Creates a spacious, atmospheric mood."},
+                {"tag": "piano", "meaning": "Centers the arrangement on piano tone."},
+                {"tag": "jazz", "meaning": "Adds jazz harmony, groove, or instrumentation."},
+            ],
             profile_output_text="TAGS:\nambient, piano, jazz",
         )
 
@@ -135,6 +140,10 @@ def test_api_profiles_scores_and_ranks_songs(tmp_path: Path, monkeypatch) -> Non
     seeded_body = seeded.json()
     assert "ambient" in seeded_body["tags"]
     assert "piano" in seeded_body["tags"]
+    assert seeded_body["tag_meanings"][0] == {
+        "tag": "ambient",
+        "meaning": "Creates a spacious, atmospheric mood.",
+    }
     assert seeded_body["updated_at"]
 
     fetched_tags = client.get("/v1/me/music-tags", headers=headers)

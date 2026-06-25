@@ -9,6 +9,7 @@
 核心目标
 从用户一次性给出的参考作品和偏好描述中推断:
 * TAGS: 用户偏好的音乐风格、声音质感、人声、节奏、制作、情绪、歌词主题和负向偏好
+* TAG MEANINGS: 每个 tag 对音乐推荐和生成来说代表什么声音、情绪、编曲或制作意义
 
 重要规则
 1. 音乐风格/声音相关 tags 优先从后面提供的 Allowed TAGS whitelist 中选择,并且照抄 whitelist 中的拼写。
@@ -18,6 +19,8 @@
 5. 如果用户口味无法精确对应 whitelist,选择最接近的 whitelist tag。
 6. 歌词主题和负向偏好也放在同一个 TAGS 段落里。负向偏好必须以 no 开头。
 7. 输出 tags 不要过多,总量 12-36 个。
+8. TAG MEANINGS 必须为 TAGS 中的每个 tag 各写一行,并使用完全相同的 tag 拼写。
+9. TAG MEANINGS 的说明要面向音乐,不要解释作品剧情,每行一句中文短句。
 
 输出格式
 严格使用这些段落标题:
@@ -27,6 +30,12 @@ REFERENCE SUMMARY:
 
 TAGS:
 tag1, tag2, tag3, no tag4
+
+TAG MEANINGS:
+tag1: 代表...
+tag2: 代表...
+tag3: 代表...
+no tag4: 避免...
 
 SOURCE NOTES:
 用中文简短说明每个重要参考作品对应到哪些声音或情绪偏好。

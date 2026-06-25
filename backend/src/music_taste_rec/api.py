@@ -95,6 +95,11 @@ class MusicProfileRequest(BaseModel):
     save: bool = True
 
 
+class MusicProfileTagMeaning(BaseModel):
+    tag: str
+    meaning: str
+
+
 class MusicProfileResponse(BaseModel):
     input_text: str
     reference_summary: str
@@ -104,6 +109,7 @@ class MusicProfileResponse(BaseModel):
     known_tags: list[str]
     corrected_tags: list[dict[str, str]]
     unknown_tags: list[str]
+    tag_meanings: list[MusicProfileTagMeaning] = Field(default_factory=list)
     updated_at: str | None = None
 
 
@@ -355,8 +361,27 @@ def _music_profile_response(
         known_tags=profile.known_tags,
         corrected_tags=profile.corrected_tags,
         unknown_tags=profile.unknown_tags,
+        tag_meanings=_profile_tag_meanings(profile, tags),
         updated_at=updated_at,
     )
+
+
+def _profile_tag_meanings(
+    profile: GeneratedMusicProfile,
+    tags: list[str],
+) -> list[MusicProfileTagMeaning]:
+    meanings_by_key = {
+        prompt_cli.canonical_tag(item.get("tag", "")): item.get("meaning", "")
+        for item in profile.tag_meanings
+        if item.get("tag") and item.get("meaning")
+    }
+    tag_meanings: list[MusicProfileTagMeaning] = []
+    for tag in tags:
+        key = prompt_cli.canonical_tag(tag)
+        meaning = meanings_by_key.get(key)
+        if meaning:
+            tag_meanings.append(MusicProfileTagMeaning(tag=tag, meaning=meaning))
+    return tag_meanings
 
 
 def _songs_frame(songs: list[SongInput]) -> pd.DataFrame:

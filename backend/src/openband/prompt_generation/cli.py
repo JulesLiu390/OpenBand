@@ -217,6 +217,7 @@ def parse_profile_sections(text: str) -> dict[str, str]:
         "style_tags": ("style tags", "allowed style tags", "风格标签"),
         "lyric_tags": ("lyric tags", "lyrics tags", "歌词标签"),
         "negative_tags": ("negative tags", "exclude tags", "负向标签"),
+        "tag_meanings": ("tag meanings", "tags meanings", "tag descriptions", "标签含义"),
         "source_notes": ("source notes", "notes", "source preferences", "参考说明"),
     }
     heading_to_key = {
